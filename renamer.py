@@ -1,7 +1,7 @@
 import os
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 # --- 1. CORE IMAGE PROCESSING FUNCTION ---
 def add_rotated_borders(image_path, output_path, filename, description, border_width=80):
@@ -12,7 +12,12 @@ def add_rotated_borders(image_path, output_path, filename, description, border_w
         bordered_img = Image.new("RGB", (new_width, new_height), "black")
         bordered_img.paste(img, (border_width, border_width))
         
-        text_content = f"{filename} - {description}"
+        # Format text depending on whether a description was provided
+        if description:
+            text_content = f"{filename} - {description}"
+        else:
+            text_content = filename
+            
         draw = ImageDraw.Draw(bordered_img)
         font_size = int(border_width * 0.4)
         
@@ -56,87 +61,163 @@ def add_rotated_borders(image_path, output_path, filename, description, border_w
 
         bordered_img.save(output_path)
 
+
 # --- 2. GUI APPLICATION ---
 class ImageProcessorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Image Border & Metadata Tool")
-        self.root.geometry("500x350")
+        self.root.title("Interactive Image Border & Metadata Tool")
+        self.root.geometry("950x600") # Tweaked size slightly for text entry comfort
         
-        # Dropdown Option Lists (Customise these categories as needed!)
-        self.copyright_options = ["© 2026 Archive Corp", "Public Domain", "All Rights Reserved", "CC BY-NC"]
-        self.location_options = ["Headquarters", "Field Site A", "Storage Facility", "External Lab"]
-        self.status_options = ["Final", "Draft", "Confidential", "Archival"]
-
-        self.create_widgets()
-
-    def create_widgets(self):
-        # Folder Selection
-        self.btn_browse = ttk.Button(self.root, text="Select Image Folder", command=self.browse_folder)
-        self.btn_browse.pack(pady=15)
-        
-        self.lbl_folder = ttk.Label(self.root, text="No folder selected", wraplength=400, foreground="gray")
-        self.lbl_folder.pack(pady=5)
-
-        # Dropdown 1: Copyright / Owner
-        ttk.Label(self.root, text="Select Copyright/Owner:").pack(pady=5)
-        self.drop_copy = ttk.Combobox(self.root, values=self.copyright_options, state="readonly", width=40)
-        self.drop_copy.set(self.copyright_options[0])
-        self.drop_copy.pack()
-
-        # Dropdown 2: Location / Site
-        ttk.Label(self.root, text="Select Location/Site:").pack(pady=5)
-        self.drop_loc = ttk.Combobox(self.root, values=self.location_options, state="readonly", width=40)
-        self.drop_loc.set(self.location_options[0])
-        self.drop_loc.pack()
-
-        # Dropdown 3: Status
-        ttk.Label(self.root, text="Select Status:").pack(pady=5)
-        self.drop_status = ttk.Combobox(self.root, values=self.status_options, state="readonly", width=40)
-        self.drop_status.set(self.status_options[0])
-        self.drop_status.pack()
-
-        # Process Button
-        self.btn_run = ttk.Button(self.root, text="Process Images", command=self.process_images)
-        self.btn_run.pack(pady=25)
-
         self.input_folder = ""
+        self.files = []
+        self.current_index = 0
+        self.tk_preview_img = None
+        
+        # Updated lists with an explicit blank option ("") at the front
+        self.copyright_options = ["", "© 2026 Archive Corp", "Public Domain", "All Rights Reserved", "CC BY-NC"]
+        self.location_options = ["", "Headquarters", "Field Site A", "Storage Facility", "External Lab"]
+        self.status_options = ["", "Final", "Draft", "Confidential", "Archival"]
+
+        self.create_layout()
+
+    def create_layout(self):
+        # Left Panel (Inputs)
+        self.left_panel = ttk.Frame(self.root, padding=15, width=380)
+        self.left_panel.pack(side="left", fill="y")
+        self.left_panel.pack_propagate(False)
+        
+        # Right Panel (Preview)
+        self.right_panel = ttk.Frame(self.root, padding=15)
+        self.right_panel.pack(side="right", expand=True, fill="both")
+
+        # --- LEFT PANEL COMPONENTS ---
+        self.btn_browse = ttk.Button(self.left_panel, text="Select Image Folder", command=self.browse_folder)
+        self.btn_browse.pack(pady=(0, 10), fill="x")
+        
+        self.lbl_folder = ttk.Label(self.left_panel, text="No folder selected", wraplength=340, foreground="gray")
+        self.lbl_folder.pack(pady=(0, 15))
+
+        # Dropdowns (State changed from "readonly" to "normal" so users can clear text or type custom info)
+        ttk.Label(self.left_panel, text="Select Copyright/Owner:").pack(anchor="w", pady=2)
+        self.drop_copy = ttk.Combobox(self.left_panel, values=self.copyright_options, state="normal")
+        self.drop_copy.set(self.copyright_options[1]) # Default to the first actual text option
+        self.drop_copy.pack(fill="x", pady=(0, 12))
+
+        ttk.Label(self.left_panel, text="Select Location/Site:").pack(anchor="w", pady=2)
+        self.drop_loc = ttk.Combobox(self.left_panel, values=self.location_options, state="normal")
+        self.drop_loc.set(self.location_options[1])
+        self.drop_loc.pack(fill="x", pady=(0, 12))
+
+        ttk.Label(self.left_panel, text="Select Status:").pack(anchor="w", pady=2)
+        self.drop_status = ttk.Combobox(self.left_panel, values=self.status_options, state="normal")
+        self.drop_status.set(self.status_options[1])
+        self.drop_status.pack(fill="x", pady=(0, 12))
+
+        # NEW: Free Text Section
+        ttk.Label(self.left_panel, text="Custom Notes / Free Text:").pack(anchor="w", pady=2)
+        self.txt_notes = ttk.Entry(self.left_panel)
+        self.txt_notes.pack(fill="x", pady=(0, 25))
+
+        # Workflow Control Buttons
+        self.btn_process = tk.Button(self.left_panel, text="Process & Next", bg="#2ecc71", fg="white", 
+                                     font=("Arial", 11, "bold"), command=self.process_current, state="disabled")
+        self.btn_process.pack(fill="x", pady=5)
+        
+        self.btn_skip = tk.Button(self.left_panel, text="Skip Image", bg="#95a5a6", fg="white", 
+                                  font=("Arial", 11), command=self.skip_current, state="disabled")
+        self.btn_skip.pack(fill="x", pady=5)
+
+        # --- RIGHT PANEL COMPONENTS ---
+        self.lbl_counter = ttk.Label(self.right_panel, text="Please load a folder to preview files", font=("Arial", 11, "bold"))
+        self.lbl_counter.pack(pady=(0, 5))
+        
+        self.lbl_filename = ttk.Label(self.right_panel, text="", font=("Arial", 9, "italic"), wraplength=500)
+        self.lbl_filename.pack(pady=(0, 10))
+
+        self.preview_canvas = tk.Label(self.right_panel, bg="#eaeaea", relief="sunken", borderwidth=1)
+        self.preview_canvas.pack(expand=True, fill="both")
 
     def browse_folder(self):
-        self.input_folder = filedialog.askdirectory()
-        if self.input_folder:
-            self.lbl_folder.config(text=f"Selected: {self.input_folder}", foreground="black")
+        selected = filedialog.askdirectory()
+        if not selected:
+            return
+            
+        self.input_folder = selected
+        self.lbl_folder.config(text=f"Folder: {self.input_folder}", foreground="black")
+        
+        valid_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff')
+        self.files = [f for f in os.listdir(self.input_folder) if f.lower().endswith(valid_extensions)]
+        
+        if not self.files:
+            messagebox.showinfo("No Images", "No valid images found in the selected folder.")
+            self.btn_process.config(state="disabled")
+            self.btn_skip.config(state="disabled")
+            return
+            
+        self.current_index = 0
+        self.btn_process.config(state="normal")
+        self.btn_skip.config(state="normal")
+        
+        self.load_current_image_preview()
 
-    def process_images(self):
-        if not self.input_folder:
-            messagebox.showerror("Error", "Please select an input folder first.")
+    def load_current_image_preview(self):
+        if self.current_index >= len(self.files):
+            messagebox.showinfo("Done", "All target folder images have been reviewed.")
+            self.lbl_counter.config(text="Review Complete!")
+            self.lbl_filename.config(text="")
+            self.preview_canvas.config(image="")
+            self.btn_process.config(state="disabled")
+            self.btn_skip.config(state="disabled")
             return
 
-        # Combine dropdown selections into a single description string
-        combined_description = f"{self.drop_copy.get()} | {self.drop_loc.get()} | {self.drop_status.get()}"
+        filename = self.files[self.current_index]
+        self.lbl_counter.config(text=f"Reviewing Image {self.current_index + 1} of {len(self.files)}")
+        self.lbl_filename.config(text=filename)
+
+        full_path = os.path.join(self.input_folder, filename)
+        try:
+            with Image.open(full_path) as img:
+                img.thumbnail((520, 420))
+                self.tk_preview_img = ImageTk.PhotoImage(img)
+                self.preview_canvas.config(image=self.tk_preview_img)
+        except Exception as e:
+            self.preview_canvas.config(image="")
+            messagebox.showerror("Preview Error", f"Could not preview {filename}\nError: {e}")
+
+    def process_current(self):
+        current_file = self.files[self.current_index]
+        in_path = os.path.join(self.input_folder, current_file)
         
         output_folder = os.path.join(self.input_folder, "bordered_output")
         if not os.path.exists(output_folder):
             os.makedirs(output_folder)
-
-        valid_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff')
-        files = [f for f in os.listdir(self.input_folder) if f.lower().endswith(valid_extensions)]
-
-        if not files:
-            messagebox.showinfo("No Images", "No valid images found in the selected folder.")
-            return
-
-        for file in files:
-            in_path = os.path.join(self.input_folder, file)
-            out_path = os.path.join(output_folder, f"bordered_{file}")
-            filename_slug = os.path.splitext(file)[0]
             
-            add_rotated_borders(in_path, out_path, filename_slug, combined_description)
+        out_path = os.path.join(output_folder, f"bordered_{current_file}")
+        filename_slug = os.path.splitext(current_file)[0]
+        
+        # Collect values and filter out empty strings
+        metadata_pieces = [
+            self.drop_copy.get().strip(),
+            self.drop_loc.get().strip(),
+            self.drop_status.get().strip(),
+            self.txt_notes.get().strip()
+        ]
+        
+        # Join only the non-empty fields using the | symbol
+        valid_pieces = [piece for piece in metadata_pieces if piece]
+        combined_description = " | ".join(valid_pieces)
+        
+        # Process image
+        add_rotated_borders(in_path, out_path, filename_slug, combined_description)
+        
+        # Clear the free-text entry box for the next photo (optional workflow choice)
+        self.txt_notes.delete(0, tk.END)
+        
+        # Step forward
+        self.current_index += 1
+        self.load_current_image_preview()
 
-        messagebox.showinfo("Success", f"Processed {len(files)} images successfully!\nSaved to 'bordered_output' folder.")
-
-# Run the app
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = ImageProcessorApp(root)
-    root.mainloop()
+    def skip_current(self):
+        # Clear the free-text field on skip too so old entries don't roll over accidentally
+        self.txt_notes.delete(0, tk.END)
