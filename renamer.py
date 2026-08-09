@@ -4,7 +4,7 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
-from PIL import Image, ImageDraw, ImageFont, ImageTk
+from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageOps
 from PIL.ExifTags import TAGS
 
 
@@ -21,7 +21,6 @@ def get_date_taken(image_path):
 
                         if len(date_clean) == 8 and date_clean.isdigit():
                             return date_clean
-
     except Exception:
         pass
 
@@ -42,6 +41,22 @@ def sanitize_to_slug(text):
     return re.sub(r"[-\s]+", "-", text).strip("-")
 
 
+def get_scalable_font(font_size):
+    """Attempt to load system truetype fonts across Windows/Mac/Linux."""
+    font_candidates = [
+        "arial.ttf",
+        "DejaVuSans.ttf",
+        "Helvetica.ttf",
+        "LiberationSans-Regular.ttf",
+    ]
+    for font_name in font_candidates:
+        try:
+            return ImageFont.truetype(font_name, font_size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
 def create_bordered_preview(base_img, border_text, border_width=40):
     """Generate preview image with border text."""
     preview_img = base_img.copy()
@@ -54,7 +69,7 @@ def create_bordered_preview(base_img, border_text, border_width=40):
     mockup.paste(preview_img, (border_width, border_width))
 
     draw = ImageDraw.Draw(mockup)
-    font = ImageFont.load_default()
+    font = get_scalable_font(int(border_width * 0.4))
 
     bbox = draw.textbbox((0, 0), border_text, font=font)
     tw = bbox[2] - bbox[0]
@@ -79,13 +94,8 @@ def add_rotated_borders(base_img, output_path, border_text, border_width=80):
     bordered_img.paste(base_img, (border_width, border_width))
 
     draw = ImageDraw.Draw(bordered_img)
-
-    font_size = int(border_width * 0.4)
-
-    try:
-        font = ImageFont.truetype("arial.ttf", font_size)
-    except Exception:
-        font = ImageFont.load_default()
+    font_size = max(12, int(border_width * 0.4))
+    font = get_scalable_font(font_size)
 
     bbox = draw.textbbox((0, 0), border_text, font=font)
     tw = bbox[2] - bbox[0]
@@ -219,9 +229,9 @@ class ImageProcessorApp:
         self.txt_notes.pack(fill="x", pady=(0, 15))
 
         for widget in (
-                self.drop_copy,
-                self.drop_loc,
-                self.drop_status,
+            self.drop_copy,
+            self.drop_loc,
+            self.drop_status,
         ):
             widget.bind(
                 "<<ComboboxSelected>>",
@@ -337,8 +347,9 @@ class ImageProcessorApp:
 
         exts = (".jpg", ".jpeg", ".png", ".bmp", ".tiff")
 
-        self.files = sorted(f for f in os.listdir(selected)
-                            if f.lower().endswith(exts))
+        self.files = sorted(
+            f for f in os.listdir(selected) if f.lower().endswith(exts)
+        )
 
         if not self.files:
             messagebox.showinfo("No Images", "No valid images found.")
@@ -375,13 +386,16 @@ class ImageProcessorApp:
         filename = self.files[self.current_index]
 
         self.lbl_cnt.config(
-            text=f"Image {self.current_index + 1} of {len(self.files)}")
+            text=f"Image {self.current_index + 1} of {len(self.files)}"
+        )
         self.lbl_fn.config(text=filename)
 
         try:
             path = os.path.join(self.input_folder, filename)
 
-            self.current_pil_img = Image.open(path)
+            # Auto-orient based on EXIF tag
+            raw_img = Image.open(path)
+            self.current_pil_img = ImageOps.exif_transpose(raw_img)
 
             thumb = self.current_pil_img.copy()
             thumb.thumbnail((340, 340))
@@ -417,6 +431,9 @@ class ImageProcessorApp:
         return self.current_pil_img.copy()
 
     def update_edited_mockup(self):
+        if not self.files or self.current_index >= len(self.files):
+            return
+
         img = self.get_current_working_image()
 
         if img is None:
@@ -442,8 +459,12 @@ class ImageProcessorApp:
         self.canvas_edit.config(image=self.tk_edit_img)
 
     def process_current_event(self, event):
-        if (self.btn_process["state"] == "normal"
-                and self.root.focus_get() != self.txt_notes):
+        focused = self.root.focus_get()
+        # Ignore spacebar trigger if user is actively typing in any input field
+        if isinstance(focused, (ttk.Entry, ttk.Combobox, tk.Entry)):
+            return
+
+        if self.btn_process["state"] == "normal":
             self.process_current()
 
     def process_current(self):
@@ -451,7 +472,6 @@ class ImageProcessorApp:
             return
 
         filename = self.files[self.current_index]
-
         input_path = os.path.join(self.input_folder, filename)
 
         output_dir = os.path.join(
@@ -470,25 +490,31 @@ class ImageProcessorApp:
         status_val = self.drop_status.get().strip()
         notes_val = self.txt_notes.get().strip()
 
-        border_text = " | ".join(x for x in [
-            stem,
-            copy_val,
-            loc_val,
-            status_val,
-            notes_val,
-        ] if x)
+        border_text = " | ".join(
+            x
+            for x in [
+                stem,
+                copy_val,
+                loc_val,
+                status_val,
+                notes_val,
+            ]
+            if x
+        )
 
+        # Retain original stem in output filename to prevent overwriting files
         filename_parts = [
             date_taken,
+            stem,
             sanitize_to_slug(copy_val),
             sanitize_to_slug(loc_val),
             sanitize_to_slug(status_val),
             sanitize_to_slug(notes_val),
         ]
 
-        output_name = ("-".join(part for part in filename_parts if part) +
-                       ext.lower())
-
+        output_name = (
+            "-".join(part for part in filename_parts if part) + ext.lower()
+        )
         output_path = os.path.join(output_dir, output_name)
 
         final_img = self.get_current_working_image()
