@@ -164,7 +164,7 @@ def strip_four_side_border(img,
 
 
 def add_uniform_bordered_text(base_img, border_text, border_width=80):
-    """Adds a new black border with clean text scaled proportionally to border thickness."""
+    """Adds a new black border at FULL RESOLUTION with clean text scaled proportionally."""
     w, h = base_img.size
     new_w = w + (border_width * 2)
     new_h = h + (border_width * 2)
@@ -515,7 +515,7 @@ class ImageProcessorApp:
             self.lbl_bottom.config(text=f"Bottom: {est_b:.1f}%")
 
             thumb = self.current_pil_img.copy()
-            thumb.thumbnail((380, 380), Image.Resampling.LANCZOS)
+            thumb.thumbnail((320, 320), Image.Resampling.LANCZOS)
 
             self.tk_orig_img = ImageTk.PhotoImage(thumb)
             self.canvas_orig.config(image=self.tk_orig_img)
@@ -538,7 +538,7 @@ class ImageProcessorApp:
 
         img = self.current_pil_img.copy()
 
-        # 1. Apply independent 4-side percentage trims
+        # 1. Apply independent 4-side percentage trims (at full resolution)
         l = self.slider_left.get()
         r = self.slider_right.get()
         t = self.slider_top.get()
@@ -551,7 +551,7 @@ class ImageProcessorApp:
                                          pct_top=t,
                                          pct_bottom=b)
 
-        # 2. Apply orientation rotation
+        # 2. Apply orientation rotation (at full resolution)
         if self.rotation_angle:
             img = img.rotate(self.rotation_angle, expand=True)
 
@@ -569,16 +569,28 @@ class ImageProcessorApp:
         ]
         border_text = " | ".join(p for p in parts if p)
 
-        # 3. Add fresh uniform border
+        # 3. Build full-resolution bordered image
         border_thickness = int(max(img.size) * 0.05)
         full_bordered = add_uniform_bordered_text(
             img, border_text, border_width=border_thickness)
 
-        # 4. High-quality downsample for preview
-        preview_copy = full_bordered.copy()
-        preview_copy.thumbnail((380, 380), Image.Resampling.LANCZOS)
+        # 4. FIXED SCALE CALCULATION:
+        # Scale based on the UNTRIMMED original photo dimensions so the photo content
+        # remains identical in scale across both left and right preview panels.
+        orig_w, orig_h = self.current_pil_img.size
+        if self.rotation_angle in (90, 270):
+            orig_w, orig_h = orig_h, orig_w  # Account for preview rotation
 
-        self.tk_edit_img = ImageTk.PhotoImage(preview_copy)
+        max_orig_dim = max(orig_w, orig_h)
+        scale_factor = 320.0 / max_orig_dim if max_orig_dim > 0 else 1.0
+
+        preview_w = max(1, int(full_bordered.width * scale_factor))
+        preview_h = max(1, int(full_bordered.height * scale_factor))
+
+        preview_bordered = full_bordered.resize((preview_w, preview_h),
+                                                Image.Resampling.LANCZOS)
+
+        self.tk_edit_img = ImageTk.PhotoImage(preview_bordered)
         self.canvas_edit.config(image=self.tk_edit_img)
 
     def process_current_event(self, event):
