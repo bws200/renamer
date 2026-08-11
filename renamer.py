@@ -1,5 +1,6 @@
 import os
 import re
+import math
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -183,7 +184,10 @@ def add_uniform_bordered_text(base_img, border_text, border_width=80):
     tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
 
-    text_strip = Image.new("RGBA", (tw + 12, th + 8), (0, 0, 0, 0))
+    # Ensure integer dimensions for Pillow (width, height) to avoid type errors
+    ts_w = max(1, int(math.ceil(tw)) + 12)
+    ts_h = max(1, int(math.ceil(th)) + 8)
+    text_strip = Image.new("RGBA", (ts_w, ts_h), (0, 0, 0, 0))
     strip_draw = ImageDraw.Draw(text_strip)
     strip_draw.text((6, 0), border_text, fill="white", font=font)
 
@@ -237,7 +241,7 @@ class ImageProcessorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Interactive Dual-Preview Photo Workflow Tool")
-        self.root.geometry("1240x780")
+        self.root.geometry("1240x820")
 
         self.input_folder = ""
         self.files = []
@@ -363,8 +367,10 @@ class ImageProcessorApp:
                         lambda e: self.update_edited_mockup())
             widget.bind("<KeyRelease>", lambda e: self.update_edited_mockup())
 
-        self.txt_notes.bind("<KeyRelease>",
+        # Updates only when pressing Enter or clicking outside the entry box
+        self.txt_notes.bind("<FocusOut>",
                             lambda e: self.update_edited_mockup())
+        self.txt_notes.bind("<Return>", lambda e: self.update_edited_mockup())
 
         ttk.Label(self.left,
                   text="Rotate Image Orientation:").pack(anchor="w",
@@ -425,10 +431,27 @@ class ImageProcessorApp:
         )
         self.lbl_cnt.pack()
 
-        self.lbl_fn = ttk.Label(self.right,
-                                text="",
-                                font=("Arial", 9, "italic"))
-        self.lbl_fn.pack(pady=(0, 10))
+        # Filename Preview Section
+        name_preview_frame = ttk.Frame(self.right, padding=(0, 5, 0, 10))
+        name_preview_frame.pack(fill="x")
+
+        self.lbl_old_fn = ttk.Label(
+            name_preview_frame,
+            text="Original File: --",
+            font=("Arial", 9),
+            foreground="#555555",
+            anchor="center",
+        )
+        self.lbl_old_fn.pack(fill="x")
+
+        self.lbl_new_fn = ttk.Label(
+            name_preview_frame,
+            text="New File: --",
+            font=("Arial", 9, "bold"),
+            foreground="#27ae60",
+            anchor="center",
+        )
+        self.lbl_new_fn.pack(fill="x")
 
         container = ttk.Frame(self.right)
         container.pack(expand=True, fill="both")
@@ -493,7 +516,6 @@ class ImageProcessorApp:
 
         self.lbl_cnt.config(
             text=f"Image {self.current_index + 1} of {len(self.files)}")
-        self.lbl_fn.config(text=filename)
 
         try:
             path = os.path.join(self.input_folder, filename)
@@ -528,6 +550,7 @@ class ImageProcessorApp:
 
     def rotate_image(self, angle):
         if self.current_pil_img is None:
+            messagebox.showerror("Error", "No image loaded to rotate.")
             return
         self.rotation_angle = (self.rotation_angle + angle) % 360
         self.update_edited_mockup()
@@ -535,10 +558,13 @@ class ImageProcessorApp:
     def update_edited_mockup(self):
         if not self.files or self.current_index >= len(self.files):
             return
+        if self.current_pil_img is None:
+            messagebox.showerror("Error", "No image loaded to update preview.")
+            return
 
         img = self.current_pil_img.copy()
 
-        # 1. Apply independent 4-side percentage trims (at full resolution)
+        # 1. Apply independent 4-side percentage trims
         l = self.slider_left.get()
         r = self.slider_right.get()
         t = self.slider_top.get()
@@ -551,7 +577,7 @@ class ImageProcessorApp:
                                          pct_top=t,
                                          pct_bottom=b)
 
-        # 2. Apply orientation rotation (at full resolution)
+        # 2. Apply orientation rotation
         if self.rotation_angle:
             img = img.rotate(self.rotation_angle, expand=True)
 
@@ -560,12 +586,32 @@ class ImageProcessorApp:
 
         _, date_file_str, date_label_str = get_exif_data_and_dates(input_path)
 
+        copy_val = self.drop_copy.get().strip()
+        loc_val = self.drop_loc.get().strip()
+        status_val = self.drop_status.get().strip()
+        notes_val = self.txt_notes.get().strip()
+
+        # Update Filename Text Previews
+        ext = os.path.splitext(filename)[1]
+        new_fn_parts = [
+            date_file_str,
+            sanitize_to_slug(copy_val),
+            sanitize_to_slug(loc_val),
+            sanitize_to_slug(status_val),
+            sanitize_to_slug(notes_val),
+        ]
+        new_filename = ("-".join(part for part in new_fn_parts if part) +
+                        ext.lower())
+
+        self.lbl_old_fn.config(text=f"Original File: {filename}")
+        self.lbl_new_fn.config(text=f"New File Preview: {new_filename}")
+
         parts = [
             date_label_str,
-            self.drop_copy.get().strip(),
-            self.drop_loc.get().strip(),
-            self.drop_status.get().strip(),
-            self.txt_notes.get().strip(),
+            copy_val,
+            loc_val,
+            status_val,
+            notes_val,
         ]
         border_text = " | ".join(p for p in parts if p)
 
@@ -574,12 +620,10 @@ class ImageProcessorApp:
         full_bordered = add_uniform_bordered_text(
             img, border_text, border_width=border_thickness)
 
-        # 4. FIXED SCALE CALCULATION:
-        # Scale based on the UNTRIMMED original photo dimensions so the photo content
-        # remains identical in scale across both left and right preview panels.
+        # 4. Preview Display Scaling: Base image stays at 1:1 scale relative to the untrimmed original
         orig_w, orig_h = self.current_pil_img.size
         if self.rotation_angle in (90, 270):
-            orig_w, orig_h = orig_h, orig_w  # Account for preview rotation
+            orig_w, orig_h = orig_h, orig_w
 
         max_orig_dim = max(orig_w, orig_h)
         scale_factor = 320.0 / max_orig_dim if max_orig_dim > 0 else 1.0
@@ -621,7 +665,6 @@ class ImageProcessorApp:
         status_val = self.drop_status.get().strip()
         notes_val = self.txt_notes.get().strip()
 
-        # Build output filename starting directly from EXIF Date
         filename_parts = [
             date_file_str,
             sanitize_to_slug(copy_val),
@@ -639,6 +682,10 @@ class ImageProcessorApp:
             icon="question",
         )
         if not confirm:
+            return
+
+        if self.current_pil_img is None:
+            messagebox.showerror("Error", "No image loaded to process.")
             return
 
         img = self.current_pil_img.copy()
@@ -667,10 +714,9 @@ class ImageProcessorApp:
                                               border_text,
                                               border_width=border_thickness)
 
-        # Set EXIF Orientation to 1 (normal / upright) to prevent double rotation in photo viewers
         save_kwargs = {}
         if exif_obj and ext.lower() in (".jpg", ".jpeg", ".tiff"):
-            exif_obj[0x0112] = 1  # Standard Orientation tag = 1 (Normal)
+            exif_obj[0x0112] = 1
             save_kwargs["exif"] = exif_obj.tobytes()
 
         final_img.save(output_path, **save_kwargs)
