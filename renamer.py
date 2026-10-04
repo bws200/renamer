@@ -95,6 +95,29 @@ def get_unique_output_path(output_dir, output_name):
     return candidate
 
 
+def save_image_exclusively(image, output_path, image_format, save_kwargs=None):
+    """Save an image without replacing an existing file."""
+    output_created = False
+    try:
+        with open(output_path, "xb") as output_file:
+            output_created = True
+            image.save(output_file, format=image_format, **(save_kwargs or {}))
+    except FileExistsError:
+        raise
+    except (OSError, ValueError) as save_error:
+        if output_created:
+            try:
+                os.remove(output_path)
+            except FileNotFoundError:
+                pass
+            except OSError as cleanup_error:
+                raise OSError(
+                    f"Failed to save {output_path}: {save_error}. "
+                    f"Could not remove the incomplete output file: "
+                    f"{cleanup_error}") from save_error
+        raise
+
+
 def get_scalable_font(font_size):
     """Cross-platform TrueType font loader checking explicit system paths."""
     font_names = [
@@ -785,13 +808,9 @@ class ImageProcessorApp:
                 "Error", f"Unsupported output image extension: {ext}")
             return
 
-        output_created = False
         try:
-            with open(output_path, "xb") as output_file:
-                output_created = True
-                final_img.save(output_file,
-                               format=image_format,
-                               **save_kwargs)
+            save_image_exclusively(final_img, output_path, image_format,
+                                   save_kwargs)
         except FileExistsError:
             messagebox.showerror(
                 "Save Conflict",
@@ -799,18 +818,6 @@ class ImageProcessorApp:
             )
             return
         except (OSError, ValueError) as exc:
-            if output_created:
-                try:
-                    os.remove(output_path)
-                except FileNotFoundError:
-                    pass
-                except OSError as cleanup_error:
-                    messagebox.showerror(
-                        "Save Error",
-                        f"Failed to save {output_path}:\n\n{exc}\n\n"
-                        f"Could not remove the incomplete output file:\n{cleanup_error}",
-                    )
-                    return
             messagebox.showerror("Save Error",
                                  f"Failed to save {output_path}:\n\n{exc}")
             return
