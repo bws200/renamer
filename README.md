@@ -12,6 +12,8 @@ and saves a processed copy with a descriptive filename.
 - Rotate images in 90-degree increments.
 - Add copyright/owner, location, status, and notes to the border and filename.
 - Detect dark borders as an initial crop suggestion.
+- Debounce editing gestures and render interactive previews at reduced
+  resolution for smoother work with large photos.
 - Save processed images to a `bordered_output` subfolder without replacing
   existing files.
 
@@ -53,6 +55,10 @@ Then install requirements and run `python renamer.py` as above.
    Left Arrow goes back, and Space processes the current image when a text
    field is not focused.
 
+Empty folders show a no-images state with processing and navigation disabled.
+When the folder queue is exhausted, the app shows **Batch complete**, disables
+process/skip, and keeps Previous available so you can revisit an image.
+
 The filename starts with the capture date (`YYYYMMDD`) when available, followed
 by non-empty metadata fields as lowercase, hyphen-separated slugs. If the image
 has no usable EXIF date, the app uses the filesystem timestamp: creation time
@@ -62,6 +68,10 @@ If a destination name already exists, the app adds a numeric suffix such as
 `-2` before the extension. It also opens the destination in exclusive-create
 mode, so a file that appears after the confirmation prompt is never silently
 overwritten.
+
+Interactive previews are capped at 1200 pixels on their longest edge and
+updates are debounced while you adjust controls. Saved output is still rendered
+from the full-resolution source image.
 
 Supported source extensions are `.jpg`, `.jpeg`, `.png`, `.bmp`, and `.tiff`.
 The output keeps the source extension. The processed pixels are

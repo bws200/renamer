@@ -9,6 +9,9 @@ from tkinter import ttk, messagebox, filedialog
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageOps
 
+PREVIEW_MAX_DIMENSION = 1200
+PREVIEW_DEBOUNCE_MS = 120
+
 
 def to_clean_rgb(img):
     """Safely converts any PIL image mode (RGBA, P, L, CMYK) to RGB without color corruption.
@@ -82,6 +85,16 @@ def sanitize_to_slug(text):
     text = text.replace("©", "").strip().lower()
     text = re.sub(r"[^\w\s-]", "", text)
     return re.sub(r"[-\s]+", "-", text).strip("-")
+
+
+def resize_to_fit(img, max_dimension):
+    """Resize an image to fit within a square bound without enlarging it."""
+    width, height = img.size
+    scale = min(1.0, max_dimension / max(width, height))
+    if scale == 1.0:
+        return img
+    size = (max(1, int(width * scale)), max(1, int(height * scale)))
+    return img.resize(size, Image.Resampling.LANCZOS)
 
 
 def get_unique_output_path(output_dir, output_name):
@@ -335,6 +348,7 @@ class ImageProcessorApp:
 
         self.current_pil_img = None
         self.rotation_angle = 0
+        self._preview_after_id = None
 
         self.tk_orig_img = None
         self.tk_edit_img = None
@@ -445,12 +459,14 @@ class ImageProcessorApp:
 
         for widget in (self.drop_copy, self.drop_loc, self.drop_status):
             widget.bind("<<ComboboxSelected>>",
-                        lambda e: self.update_edited_mockup())
-            widget.bind("<KeyRelease>", lambda e: self.update_edited_mockup())
+                        lambda e: self.schedule_edited_preview())
+            widget.bind("<KeyRelease>",
+                        lambda e: self.schedule_edited_preview())
 
         self.txt_notes.bind("<FocusOut>",
-                            lambda e: self.update_edited_mockup())
-        self.txt_notes.bind("<Return>", lambda e: self.update_edited_mockup())
+                            lambda e: self.schedule_edited_preview())
+        self.txt_notes.bind("<Return>",
+                            lambda e: self.schedule_edited_preview())
 
         ttk.Label(self.left,
                   text="Rotate Image Orientation:").pack(anchor="w",
@@ -550,6 +566,54 @@ class ImageProcessorApp:
         self.root.bind("<Left>", lambda e: self.prev_current())
         self.root.bind("<space>", self.process_current_event)
 
+    def _cancel_scheduled_preview(self):
+        if self._preview_after_id is not None:
+            self.root.after_cancel(self._preview_after_id)
+            self._preview_after_id = None
+
+    def schedule_edited_preview(self):
+        self._cancel_scheduled_preview()
+        self._preview_after_id = self.root.after(
+            PREVIEW_DEBOUNCE_MS,
+            self._run_scheduled_preview,
+        )
+
+    def _run_scheduled_preview(self):
+        self._preview_after_id = None
+        self.update_edited_mockup()
+
+    def _update_navigation_buttons(self):
+        has_files = bool(self.files)
+        has_current_file = (
+            has_files and 0 <= self.current_index < len(self.files))
+        has_current_image = (
+            has_current_file and self.current_pil_img is not None)
+        can_go_back = has_files and self.current_index > 0
+
+        self.btn_process.config(
+            state="normal" if has_current_image else "disabled")
+        self.btn_skip.config(
+            state="normal" if has_current_file else "disabled")
+        self.btn_back.config(state="normal" if can_go_back else "disabled")
+
+    def _show_empty_state(self):
+        self._cancel_scheduled_preview()
+        self.current_pil_img = None
+        self.rotation_angle = 0
+        self.tk_orig_img = None
+        self.tk_edit_img = None
+        self.lbl_cnt.config(text="No supported images found")
+        self.lbl_old_fn.config(text="Original File: --")
+        self.lbl_new_fn.config(text="New File: --")
+        self.canvas_orig.config(image="")
+        self.canvas_edit.config(image="")
+        self._update_navigation_buttons()
+
+    def _show_complete_state(self):
+        self._cancel_scheduled_preview()
+        self.lbl_cnt.config(text="Batch complete")
+        self._update_navigation_buttons()
+
     def on_slider_change(self, val):
         l = self.slider_left.get()
         r = self.slider_right.get()
@@ -561,7 +625,7 @@ class ImageProcessorApp:
         self.lbl_top.config(text=f"Top: {t:.1f}%")
         self.lbl_bottom.config(text=f"Bottom: {b:.1f}%")
 
-        self.update_edited_mockup()
+        self.schedule_edited_preview()
 
     def browse_folder(self):
         selected = filedialog.askdirectory()
@@ -576,32 +640,43 @@ class ImageProcessorApp:
                             if f.lower().endswith(exts))
 
         if not self.files:
+            self.current_index = 0
+            self._show_empty_state()
             messagebox.showinfo("No Images", "No valid images found.")
             return
 
         self.current_index = 0
-        self.btn_process.config(state="normal")
-        self.btn_back.config(state="normal")
-        self.btn_skip.config(state="normal")
-
         self.load_preview()
 
     def load_preview(self):
-        if not self.files or self.current_index >= len(self.files):
+        self._cancel_scheduled_preview()
+        if not self.files:
+            self._show_empty_state()
+            return
+        if self.current_index >= len(self.files):
+            self._show_complete_state()
             return
 
         self.rotation_angle = 0
         filename = self.files[self.current_index]
+        self.current_pil_img = None
+        self.tk_orig_img = None
+        self.tk_edit_img = None
+        self._update_navigation_buttons()
 
         self.lbl_cnt.config(
             text=f"Image {self.current_index + 1} of {len(self.files)}")
+        self.lbl_old_fn.config(text=f"Original File: {filename}")
+        self.lbl_new_fn.config(text="New File: --")
+        self.canvas_orig.config(image="")
+        self.canvas_edit.config(image="")
 
         try:
             path = os.path.join(self.input_folder, filename)
-            raw_img = Image.open(path)
-
-            transposed = ImageOps.exif_transpose(raw_img)
-            self.current_pil_img = to_clean_rgb(transposed)
+            with Image.open(path) as raw_img:
+                transposed = ImageOps.exif_transpose(raw_img)
+                self.current_pil_img = to_clean_rgb(transposed)
+            self._update_navigation_buttons()
 
             est_l, est_r, est_t, est_b = estimate_four_side_crops(
                 self.current_pil_img, black_cutoff=1)
@@ -616,8 +691,7 @@ class ImageProcessorApp:
             self.lbl_top.config(text=f"Top: {est_t:.1f}%")
             self.lbl_bottom.config(text=f"Bottom: {est_b:.1f}%")
 
-            thumb = self.current_pil_img.copy()
-            thumb.thumbnail((320, 320), Image.Resampling.LANCZOS)
+            thumb = resize_to_fit(self.current_pil_img, 320)
 
             self.tk_orig_img = ImageTk.PhotoImage(thumb)
             self.canvas_orig.config(image=self.tk_orig_img)
@@ -625,6 +699,13 @@ class ImageProcessorApp:
             self.update_edited_mockup()
 
         except Exception as exc:
+            self.current_pil_img = None
+            self.tk_orig_img = None
+            self.tk_edit_img = None
+            self.canvas_orig.config(image="")
+            self.canvas_edit.config(image="")
+            self.lbl_cnt.config(text=f"Could not load {filename}")
+            self._update_navigation_buttons()
             messagebox.showerror("Error",
                                  f"Failed to preview {filename}\n\n{exc}")
 
@@ -633,7 +714,7 @@ class ImageProcessorApp:
             messagebox.showerror("Error", "No image loaded to rotate.")
             return
         self.rotation_angle = (self.rotation_angle + angle) % 360
-        self.update_edited_mockup()
+        self.schedule_edited_preview()
 
     def update_edited_mockup(self):
         if not self.files or self.current_index >= len(self.files):
@@ -642,7 +723,8 @@ class ImageProcessorApp:
             messagebox.showerror("Error", "No image loaded to update preview.")
             return
 
-        img = self.current_pil_img.copy()
+        img = resize_to_fit(self.current_pil_img, PREVIEW_MAX_DIMENSION)
+        preview_max_dimension = max(img.size)
 
         l = self.slider_left.get()
         r = self.slider_right.get()
@@ -699,12 +781,7 @@ class ImageProcessorApp:
         full_bordered = add_uniform_bordered_text(
             img, border_text, border_width=border_thickness)
 
-        orig_w, orig_h = self.current_pil_img.size
-        if self.rotation_angle in (90, 270):
-            orig_w, orig_h = orig_h, orig_w
-
-        max_orig_dim = max(orig_w, orig_h)
-        scale_factor = 320.0 / max_orig_dim if max_orig_dim > 0 else 1.0
+        scale_factor = 320.0 / preview_max_dimension
 
         preview_w = max(1, int(full_bordered.width * scale_factor))
         preview_h = max(1, int(full_bordered.height * scale_factor))
@@ -724,6 +801,9 @@ class ImageProcessorApp:
 
     def process_current(self):
         if self.current_index >= len(self.files):
+            return
+        if self.current_pil_img is None:
+            messagebox.showerror("Error", "No image loaded to process.")
             return
 
         filename = self.files[self.current_index]
@@ -760,10 +840,6 @@ class ImageProcessorApp:
             icon="question",
         )
         if not confirm:
-            return
-
-        if self.current_pil_img is None:
-            messagebox.showerror("Error", "No image loaded to process.")
             return
 
         img = self.current_pil_img.copy()
