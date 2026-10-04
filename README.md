@@ -59,10 +59,13 @@ Empty folders show a no-images state with processing and navigation disabled.
 When the folder queue is exhausted, the app shows **Batch complete**, disables
 process/skip, and keeps Previous available so you can revisit an image.
 
-The filename starts with the capture date (`YYYYMMDD`) when available, followed
-by non-empty metadata fields as lowercase, hyphen-separated slugs. If the image
-has no usable EXIF date, the app uses the filesystem timestamp: creation time
-on Windows and metadata-change time on many Unix-like systems.
+The filename starts with the capture timestamp (`YYYYMMDD-HHMMSS`) when a time
+is available, followed by non-empty metadata fields as lowercase,
+hyphen-separated slugs. The border label includes the same timestamp in
+`YYYY:MM:DD HH:MM:SS` form. If EXIF provides only a date, only the date is
+included. The app reads `DateTimeOriginal` first, then `DateTime`; if neither
+contains a usable date, it uses the filesystem timestamp: creation time on
+Windows and metadata-change time on many Unix-like systems.
 
 If a destination name already exists, the app adds a numeric suffix such as
 `-2` before the extension. It also opens the destination in exclusive-create

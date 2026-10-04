@@ -33,8 +33,8 @@ class RenamerTests(unittest.TestCase):
             _, date_for_name, date_for_label = get_exif_data_and_dates(
                 str(image_path))
 
-        self.assertEqual(date_for_name, "20200102")
-        self.assertEqual(date_for_label, "20200102")
+        self.assertEqual(date_for_name, "20200102-030405")
+        self.assertEqual(date_for_label, "2020:01:02 03:04:05")
 
     def test_datetime_is_used_when_original_date_is_unavailable(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -45,7 +45,7 @@ class RenamerTests(unittest.TestCase):
 
             _, date_for_name, _ = get_exif_data_and_dates(str(image_path))
 
-        self.assertEqual(date_for_name, "20191231")
+        self.assertEqual(date_for_name, "20191231-235959")
 
     def test_original_capture_date_takes_precedence_over_datetime(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -59,7 +59,71 @@ class RenamerTests(unittest.TestCase):
 
             _, date_for_name, _ = get_exif_data_and_dates(str(image_path))
 
-        self.assertEqual(date_for_name, "20200102")
+        self.assertEqual(date_for_name, "20200102-030405")
+
+    def test_midnight_capture_time_is_kept_in_timestamp(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "capture.jpg"
+            exif = Image.Exif()
+            exif[ExifTags.IFD.Exif] = {
+                ExifTags.Base.DateTimeOriginal: "2020:01:02 00:00:00"
+            }
+            Image.new("RGB", (4, 3)).save(image_path, exif=exif)
+
+            _, date_for_name, date_for_label = get_exif_data_and_dates(
+                str(image_path))
+
+        self.assertEqual(date_for_name, "20200102-000000")
+        self.assertEqual(date_for_label, "2020:01:02 00:00:00")
+
+    def test_filesystem_fallback_includes_time(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "capture.jpg"
+            Image.new("RGB", (4, 3)).save(image_path)
+
+            with patch.object(renamer.os.path, "getctime",
+                              return_value=1714986489):
+                _, date_for_name, date_for_label = (
+                    get_exif_data_and_dates(str(image_path)))
+
+        fallback_datetime = renamer.datetime.fromtimestamp(1714986489)
+        self.assertEqual(
+            date_for_name,
+            fallback_datetime.strftime("%Y%m%d-%H%M%S"),
+        )
+        self.assertEqual(
+            date_for_label,
+            fallback_datetime.strftime("%Y:%m:%d %H:%M:%S"),
+        )
+
+    def test_capture_time_remains_in_saved_exif_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir) / "source.jpg"
+            output_path = Path(temp_dir) / "output.jpg"
+            exif = Image.Exif()
+            exif[ExifTags.IFD.Exif] = {
+                ExifTags.Base.DateTimeOriginal: "2024:05:06 07:08:09"
+            }
+            Image.new("RGB", (12, 9), "green").save(source_path, exif=exif)
+
+            raw_exif, _, _ = get_exif_data_and_dates(str(source_path))
+            self.assertIsNotNone(raw_exif)
+            assert raw_exif is not None
+            raw_exif[0x0112] = 1
+            save_image_exclusively(
+                Image.new("RGB", (12, 9), "green"),
+                str(output_path),
+                "JPEG",
+                {"exif": raw_exif.tobytes()},
+            )
+
+            with Image.open(output_path) as saved_image:
+                saved_exif = saved_image.getexif().get_ifd(ExifTags.IFD.Exif)
+
+        self.assertEqual(
+            saved_exif[ExifTags.Base.DateTimeOriginal],
+            "2024:05:06 07:08:09",
+        )
 
     def test_sanitize_to_slug_removes_unsafe_punctuation(self):
         self.assertEqual(

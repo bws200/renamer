@@ -29,11 +29,12 @@ def to_clean_rgb(img):
 
 
 def get_exif_data_and_dates(image_path):
-    """Extract raw EXIF bytes alongside YYYYMMDD date string for both file naming and stamp labeling.
+    """Extract EXIF and a date-time value for filenames and border labels.
 
-    Returns: (raw_exif_dict, date_file_str, date_label_str)
+    Returns: (raw_exif_dict, filename_timestamp, border_timestamp)
     """
-    date_str = None
+    capture_datetime = None
+    has_capture_time = False
     exif_obj = None
 
     try:
@@ -54,28 +55,38 @@ def get_exif_data_and_dates(image_path):
                     for name, value in date_tags:
                         if name == tag_name:
                             raw = str(value).strip()
-                            parts = raw.split()
-                            if parts:
-                                date_clean = parts[0].replace(":", "")
-                                if (len(date_clean) == 8
-                                        and date_clean.isdigit()):
-                                    date_str = date_clean
+                            for date_format in (
+                                    "%Y:%m:%d %H:%M:%S",
+                                    "%Y:%m:%d"):
+                                try:
+                                    capture_datetime = datetime.strptime(
+                                        raw, date_format)
+                                except ValueError:
+                                    continue
+                                has_capture_time = "%H:%M:%S" in date_format
+                                break
                             break
-                    if date_str:
+                    if capture_datetime:
                         break
     except Exception:
         pass
 
-    if not date_str:
+    if not capture_datetime:
         try:
             timestamp = os.path.getctime(image_path)
-            dt = datetime.fromtimestamp(timestamp)
-            date_str = dt.strftime("%Y%m%d")
+            capture_datetime = datetime.fromtimestamp(timestamp)
+            has_capture_time = True
         except Exception:
-            dt = datetime.now()
-            date_str = dt.strftime("%Y%m%d")
+            capture_datetime = datetime.now()
+            has_capture_time = True
 
-    return exif_obj, date_str, date_str
+    filename_timestamp = capture_datetime.strftime("%Y%m%d")
+    border_timestamp = capture_datetime.strftime("%Y:%m:%d")
+    if has_capture_time:
+        filename_timestamp += capture_datetime.strftime("-%H%M%S")
+        border_timestamp += capture_datetime.strftime(" %H:%M:%S")
+
+    return exif_obj, filename_timestamp, border_timestamp
 
 
 def sanitize_to_slug(text):
