@@ -1,6 +1,7 @@
+import math
 import os
 import re
-import math
+import sys
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -9,52 +10,69 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageOps
 
 
+def to_clean_rgb(img):
+    """Safely converts any PIL image mode (RGBA, P, L, CMYK) to RGB without color corruption.
+
+    Transparent pixels are composited onto a solid white background.
+    """
+    if img.mode == "RGB":
+        return img
+
+    img_rgba = img.convert("RGBA")
+    background = Image.new("RGBA", img_rgba.size, (255, 255, 255, 255))
+    composited = Image.alpha_composite(background, img_rgba)
+
+    return composited.convert("RGB")
+
+
 def get_exif_data_and_dates(image_path):
-    """Extract raw EXIF bytes alongside formatted date strings.
+    """Extract raw EXIF bytes alongside YYYYMMDD date string for both file naming and stamp labeling.
 
     Returns: (raw_exif_dict, date_file_str, date_label_str)
     """
     date_str = None
-    time_str = None
     exif_obj = None
 
     try:
         with Image.open(image_path) as img:
             exif_obj = img.getexif()
             if exif_obj:
-                for tag_id, value in exif_obj.items():
-                    if Image.ExifTags.TAGS.get(tag_id) in (
-                            "DateTimeOriginal",
-                            "DateTime",
-                    ):
-                        raw = str(value).strip()
-                        parts = raw.split()
-                        if len(parts) >= 1:
-                            date_clean = parts[0].replace(":", "")
-                            if len(date_clean) == 8 and date_clean.isdigit():
-                                date_str = date_clean
-                        if len(parts) >= 2:
-                            time_clean = parts[1].replace(":", "")
-                            if len(time_clean) == 6 and time_clean.isdigit():
-                                time_str = time_clean
+                date_tags = [
+                    (Image.ExifTags.TAGS.get(tag_id), value)
+                    for tag_id, value in exif_obj.items()
+                ]
+                exif_ifd = exif_obj.get_ifd(Image.ExifTags.IFD.Exif)
+                date_tags.extend(
+                    (Image.ExifTags.TAGS.get(tag_id), value)
+                    for tag_id, value in exif_ifd.items()
+                )
+
+                for tag_name in ("DateTimeOriginal", "DateTime"):
+                    for name, value in date_tags:
+                        if name == tag_name:
+                            raw = str(value).strip()
+                            parts = raw.split()
+                            if parts:
+                                date_clean = parts[0].replace(":", "")
+                                if (len(date_clean) == 8
+                                        and date_clean.isdigit()):
+                                    date_str = date_clean
+                            break
+                    if date_str:
                         break
     except Exception:
         pass
 
-    # Fallback to filesystem creation date if EXIF missing
     if not date_str:
         try:
             timestamp = os.path.getctime(image_path)
             dt = datetime.fromtimestamp(timestamp)
             date_str = dt.strftime("%Y%m%d")
-            time_str = dt.strftime("%H%M%S")
         except Exception:
             dt = datetime.now()
             date_str = dt.strftime("%Y%m%d")
-            time_str = dt.strftime("%H%M%S")
 
-    display_label = f"{date_str}_{time_str}" if time_str else date_str
-    return exif_obj, date_str, display_label
+    return exif_obj, date_str, date_str
 
 
 def sanitize_to_slug(text):
@@ -66,19 +84,62 @@ def sanitize_to_slug(text):
     return re.sub(r"[-\s]+", "-", text).strip("-")
 
 
+def get_unique_output_path(output_dir, output_name):
+    """Return an unused output path by appending a number before the extension."""
+    stem, extension = os.path.splitext(output_name)
+    candidate = os.path.join(output_dir, output_name)
+    suffix = 2
+    while os.path.exists(candidate):
+        candidate = os.path.join(output_dir, f"{stem}-{suffix}{extension}")
+        suffix += 1
+    return candidate
+
+
 def get_scalable_font(font_size):
-    """Cross-platform font loader."""
-    font_candidates = [
+    """Cross-platform TrueType font loader checking explicit system paths."""
+    font_names = [
         "arial.ttf",
+        "Arial.ttf",
         "DejaVuSans.ttf",
         "Helvetica.ttf",
         "LiberationSans-Regular.ttf",
+        "SegoeUI.ttf",
     ]
-    for font_name in font_candidates:
+
+    # Platform-specific font lookup directories
+    search_dirs = []
+    if sys.platform.startswith("win"):
+        search_dirs.append(
+            os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts"))
+    elif sys.platform == "darwin":
+        search_dirs.extend([
+            "/Library/Fonts", "/System/Library/Fonts",
+            "/System/Library/Fonts/Supplemental"
+        ])
+    else:
+        search_dirs.extend([
+            "/usr/share/fonts", "/usr/share/fonts/truetype",
+            "/usr/local/share/fonts"
+        ])
+
+    # Search system directories first
+    for folder in search_dirs:
+        if os.path.exists(folder):
+            for font_name in font_names:
+                full_path = os.path.join(folder, font_name)
+                if os.path.exists(full_path):
+                    try:
+                        return ImageFont.truetype(full_path, font_size)
+                    except OSError:
+                        continue
+
+    # Fallback to current environment or default
+    for font_name in font_names:
         try:
             return ImageFont.truetype(font_name, font_size)
         except OSError:
             continue
+
     return ImageFont.load_default()
 
 
@@ -101,28 +162,24 @@ def estimate_four_side_crops(img, black_cutoff=1, span_ratio=0.50):
         dark_ratio = np.sum(line_segment <= black_cutoff) / len(line_segment)
         return dark_ratio >= 0.95
 
-    # 1. Scan UP
     top_y = 0
     for y in range(cy, -1, -1):
         if is_50pct_black_line(gray[y, x_start:x_end]):
             top_y = y
             break
 
-    # 2. Scan DOWN
     bottom_y = h - 1
     for y in range(cy, h):
         if is_50pct_black_line(gray[y, x_start:x_end]):
             bottom_y = y
             break
 
-    # 3. Scan LEFT
     left_x = 0
     for x in range(cx, -1, -1):
         if is_50pct_black_line(gray[y_start:y_end, x]):
             left_x = x
             break
 
-    # 4. Scan RIGHT
     right_x = w - 1
     for x in range(cx, w):
         if is_50pct_black_line(gray[y_start:y_end, x]):
@@ -165,72 +222,78 @@ def strip_four_side_border(img,
 
 
 def add_uniform_bordered_text(base_img, border_text, border_width=80):
-    """Adds a new black border at FULL RESOLUTION with clean text scaled proportionally."""
-    w, h = base_img.size
+    """Renders crisp full-resolution borders and sharp text stamps directly on solid RGB background."""
+    base_rgb = to_clean_rgb(base_img)
+    w, h = base_rgb.size
     new_w = w + (border_width * 2)
     new_h = h + (border_width * 2)
 
-    canvas = Image.new("RGB", (new_w, new_h), "black")
-    canvas.paste(base_img, (border_width, border_width))
+    canvas = Image.new("RGB", (new_w, new_h), (0, 0, 0))
+    canvas.paste(base_rgb, (border_width, border_width))
 
     if not border_text:
         return canvas
 
-    font_size = max(10, int(border_width * 0.35))
-    font = get_scalable_font(font_size)
+    # Dynamic target font size scaled directly to border pixel height
+    target_font_size = max(16, int(border_width * 0.45))
+    font = get_scalable_font(target_font_size)
 
     draw_temp = ImageDraw.Draw(canvas)
     bbox = draw_temp.textbbox((0, 0), border_text, font=font)
     tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
 
-    # Ensure integer dimensions for Pillow (width, height) to avoid type errors
-    ts_w = max(1, int(math.ceil(tw)) + 12)
-    ts_h = max(1, int(math.ceil(th)) + 8)
-    text_strip = Image.new("RGBA", (ts_w, ts_h), (0, 0, 0, 0))
+    ts_w = max(1, int(math.ceil(tw)) + 20)
+    ts_h = max(1, int(math.ceil(th)) + 12)
+
+    # Render on solid black RGB surface to ensure perfectly anti-aliased white text without alpha fringe
+    text_strip = Image.new("RGB", (ts_w, ts_h), (0, 0, 0))
     strip_draw = ImageDraw.Draw(text_strip)
-    strip_draw.text((6, 0), border_text, fill="white", font=font)
+    strip_draw.text((10, 2), border_text, fill=(255, 255, 255), font=font)
 
-    top_img = text_strip.convert("RGB")
-    bottom_img = text_strip.rotate(180, expand=True).convert("RGB")
-    left_img = text_strip.rotate(90, expand=True).convert("RGB")
-    right_img = text_strip.rotate(270, expand=True).convert("RGB")
+    # Lossless rotations for border orientations
+    top_strip = text_strip
+    # Use rotate() for compatibility with Pillow typing; expand to preserve full bounds
+    bottom_strip = text_strip.rotate(180, expand=True)
+    left_strip = text_strip.rotate(90, expand=True)
+    right_strip = text_strip.rotate(270, expand=True)
 
-    # Top
+    # Paste Top
     canvas.paste(
-        top_img,
+        top_strip,
         (
-            (new_w - top_img.width) // 2,
-            (border_width - top_img.height) // 2,
+            (new_w - top_strip.width) // 2,
+            (border_width - top_strip.height) // 2,
         ),
     )
 
-    # Bottom
+    # Paste Bottom
     canvas.paste(
-        bottom_img,
+        bottom_strip,
         (
-            (new_w - bottom_img.width) // 2,
-            new_h - border_width + ((border_width - bottom_img.height) // 2),
+            (new_w - bottom_strip.width) // 2,
+            new_h - border_width + ((border_width - bottom_strip.height) // 2),
         ),
     )
 
-    # Left
-    if left_img.height <= h:
+    # Paste Left
+    if left_strip.height <= h:
         canvas.paste(
-            left_img,
+            left_strip,
             (
-                (border_width - left_img.width) // 2,
-                (new_h - left_img.height) // 2,
+                (border_width - left_strip.width) // 2,
+                (new_h - left_strip.height) // 2,
             ),
         )
 
-    # Right
-    if right_img.height <= h:
+    # Paste Right
+    if right_strip.height <= h:
         canvas.paste(
-            right_img,
+            right_strip,
             (
-                new_w - border_width + ((border_width - right_img.width) // 2),
-                (new_h - right_img.height) // 2,
+                new_w - border_width +
+                ((border_width - right_strip.width) // 2),
+                (new_h - right_strip.height) // 2,
             ),
         )
 
@@ -308,13 +371,11 @@ class ImageProcessorApp:
         self.txt_notes = ttk.Entry(self.left)
         self.txt_notes.pack(fill="x", pady=(0, 10))
 
-        # Independent 4-Side Crop Controls
         crop_frame = ttk.LabelFrame(self.left,
                                     text="Trim Existing Borders (%)",
                                     padding=8)
         crop_frame.pack(fill="x", pady=(0, 10))
 
-        # Left
         self.lbl_left = ttk.Label(crop_frame, text="Left: 0.0%")
         self.lbl_left.pack(anchor="w")
         self.slider_left = ttk.Scale(
@@ -326,7 +387,6 @@ class ImageProcessorApp:
         )
         self.slider_left.pack(fill="x", pady=(0, 4))
 
-        # Right
         self.lbl_right = ttk.Label(crop_frame, text="Right: 0.0%")
         self.lbl_right.pack(anchor="w")
         self.slider_right = ttk.Scale(
@@ -338,7 +398,6 @@ class ImageProcessorApp:
         )
         self.slider_right.pack(fill="x", pady=(0, 4))
 
-        # Top
         self.lbl_top = ttk.Label(crop_frame, text="Top: 0.0%")
         self.lbl_top.pack(anchor="w")
         self.slider_top = ttk.Scale(
@@ -350,7 +409,6 @@ class ImageProcessorApp:
         )
         self.slider_top.pack(fill="x", pady=(0, 4))
 
-        # Bottom
         self.lbl_bottom = ttk.Label(crop_frame, text="Bottom: 0.0%")
         self.lbl_bottom.pack(anchor="w")
         self.slider_bottom = ttk.Scale(
@@ -367,7 +425,6 @@ class ImageProcessorApp:
                         lambda e: self.update_edited_mockup())
             widget.bind("<KeyRelease>", lambda e: self.update_edited_mockup())
 
-        # Updates only when pressing Enter or clicking outside the entry box
         self.txt_notes.bind("<FocusOut>",
                             lambda e: self.update_edited_mockup())
         self.txt_notes.bind("<Return>", lambda e: self.update_edited_mockup())
@@ -431,7 +488,6 @@ class ImageProcessorApp:
         )
         self.lbl_cnt.pack()
 
-        # Filename Preview Section
         name_preview_frame = ttk.Frame(self.right, padding=(0, 5, 0, 10))
         name_preview_frame.pack(fill="x")
 
@@ -520,9 +576,10 @@ class ImageProcessorApp:
         try:
             path = os.path.join(self.input_folder, filename)
             raw_img = Image.open(path)
-            self.current_pil_img = ImageOps.exif_transpose(raw_img)
 
-            # Center-out estimate for 4 sides
+            transposed = ImageOps.exif_transpose(raw_img)
+            self.current_pil_img = to_clean_rgb(transposed)
+
             est_l, est_r, est_t, est_b = estimate_four_side_crops(
                 self.current_pil_img, black_cutoff=1)
 
@@ -564,7 +621,6 @@ class ImageProcessorApp:
 
         img = self.current_pil_img.copy()
 
-        # 1. Apply independent 4-side percentage trims
         l = self.slider_left.get()
         r = self.slider_right.get()
         t = self.slider_top.get()
@@ -577,7 +633,6 @@ class ImageProcessorApp:
                                          pct_top=t,
                                          pct_bottom=b)
 
-        # 2. Apply orientation rotation
         if self.rotation_angle:
             img = img.rotate(self.rotation_angle, expand=True)
 
@@ -591,7 +646,6 @@ class ImageProcessorApp:
         status_val = self.drop_status.get().strip()
         notes_val = self.txt_notes.get().strip()
 
-        # Update Filename Text Previews
         ext = os.path.splitext(filename)[1]
         new_fn_parts = [
             date_file_str,
@@ -602,6 +656,9 @@ class ImageProcessorApp:
         ]
         new_filename = ("-".join(part for part in new_fn_parts if part) +
                         ext.lower())
+        output_dir = os.path.join(self.input_folder, "bordered_output")
+        new_filename = os.path.basename(
+            get_unique_output_path(output_dir, new_filename))
 
         self.lbl_old_fn.config(text=f"Original File: {filename}")
         self.lbl_new_fn.config(text=f"New File Preview: {new_filename}")
@@ -615,12 +672,10 @@ class ImageProcessorApp:
         ]
         border_text = " | ".join(p for p in parts if p)
 
-        # 3. Build full-resolution bordered image
         border_thickness = int(max(img.size) * 0.05)
         full_bordered = add_uniform_bordered_text(
             img, border_text, border_width=border_thickness)
 
-        # 4. Preview Display Scaling: Base image stays at 1:1 scale relative to the untrimmed original
         orig_w, orig_h = self.current_pil_img.size
         if self.rotation_angle in (90, 270):
             orig_w, orig_h = orig_h, orig_w
@@ -656,7 +711,6 @@ class ImageProcessorApp:
 
         ext = os.path.splitext(filename)[1]
 
-        # Extract EXIF metadata along with formatted date strings
         exif_obj, date_file_str, date_label_str = get_exif_data_and_dates(
             input_path)
 
@@ -674,7 +728,8 @@ class ImageProcessorApp:
         ]
         output_name = ("-".join(part for part in filename_parts if part) +
                        ext.lower())
-        output_path = os.path.join(output_dir, output_name)
+        output_path = get_unique_output_path(output_dir, output_name)
+        output_name = os.path.basename(output_path)
 
         confirm = messagebox.askyesno(
             "Confirm Save",
@@ -719,7 +774,46 @@ class ImageProcessorApp:
             exif_obj[0x0112] = 1
             save_kwargs["exif"] = exif_obj.tobytes()
 
-        final_img.save(output_path, **save_kwargs)
+        # Disable JPEG subsampling and enforce high quality to prevent text compression blur
+        if ext.lower() in (".jpg", ".jpeg"):
+            save_kwargs["quality"] = 98
+            save_kwargs["subsampling"] = 0
+
+        image_format = Image.registered_extensions().get(ext.lower())
+        if image_format is None:
+            messagebox.showerror(
+                "Error", f"Unsupported output image extension: {ext}")
+            return
+
+        output_created = False
+        try:
+            with open(output_path, "xb") as output_file:
+                output_created = True
+                final_img.save(output_file,
+                               format=image_format,
+                               **save_kwargs)
+        except FileExistsError:
+            messagebox.showerror(
+                "Save Conflict",
+                f"The output file was created after confirmation and was not overwritten:\n\n{output_path}",
+            )
+            return
+        except (OSError, ValueError) as exc:
+            if output_created:
+                try:
+                    os.remove(output_path)
+                except FileNotFoundError:
+                    pass
+                except OSError as cleanup_error:
+                    messagebox.showerror(
+                        "Save Error",
+                        f"Failed to save {output_path}:\n\n{exc}\n\n"
+                        f"Could not remove the incomplete output file:\n{cleanup_error}",
+                    )
+                    return
+            messagebox.showerror("Save Error",
+                                 f"Failed to save {output_path}:\n\n{exc}")
+            return
 
         self.txt_notes.delete(0, tk.END)
         self.current_index += 1
