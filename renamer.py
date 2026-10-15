@@ -1,4 +1,3 @@
-import math
 import os
 import re
 import sys
@@ -11,6 +10,8 @@ from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageOps
 
 PREVIEW_MAX_DIMENSION = 1200
 PREVIEW_DEBOUNCE_MS = 120
+SITE_DROPDOWN_MAX_HEIGHT = 20
+SITES_FILE = "sites.txt"
 
 
 def to_clean_rgb(img):
@@ -96,6 +97,21 @@ def sanitize_to_slug(text):
     text = text.replace("©", "").strip().lower()
     text = re.sub(r"[^\w\s-]", "", text)
     return re.sub(r"[-\s]+", "-", text).strip("-")
+
+
+def load_sites(settings_path):
+    """Load site names from a UTF-8 text file, one site per line."""
+    with open(settings_path, encoding="utf-8-sig") as settings_file:
+        return [
+            line.strip()
+            for line in settings_file
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+
+
+def get_site_dropdown_height(sites):
+    """Show every site when possible, up to the dropdown's 20-row limit."""
+    return max(1, min(len(sites), SITE_DROPDOWN_MAX_HEIGHT))
 
 
 def resize_to_fit(img, max_dimension):
@@ -268,81 +284,112 @@ def strip_four_side_border(img,
     return img
 
 
-def add_uniform_bordered_text(base_img, border_text, border_width=80):
-    """Renders crisp full-resolution borders and sharp text stamps directly on solid RGB background."""
+def wrap_stamp_text(text, font, max_width):
+    """Wrap stamp text at word boundaries, splitting overlong words as needed."""
+    measure_image = Image.new("RGB", (1, 1))
+    draw = ImageDraw.Draw(measure_image)
+
+    def text_width(value):
+        bbox = draw.textbbox((0, 0), value, font=font)
+        return bbox[2] - bbox[0]
+
+    wrapped_lines = []
+
+    for paragraph in text.splitlines() or [text]:
+        words = paragraph.split()
+        if not words:
+            continue
+
+        current_line = ""
+        for word in words:
+            candidate = f"{current_line} {word}".strip()
+            if text_width(candidate) <= max_width:
+                current_line = candidate
+                continue
+
+            if current_line:
+                wrapped_lines.append(current_line)
+                current_line = ""
+
+            remaining_word = word
+            while remaining_word:
+                fitting_word = ""
+                for character in remaining_word:
+                    candidate = fitting_word + character
+                    if text_width(candidate) > max_width:
+                        break
+                    fitting_word = candidate
+
+                if not fitting_word:
+                    fitting_word = remaining_word[0]
+                remaining_word = remaining_word[len(fitting_word):]
+                if remaining_word:
+                    wrapped_lines.append(fitting_word)
+                else:
+                    current_line = fitting_word
+
+        if current_line:
+            wrapped_lines.append(current_line)
+
+    return wrapped_lines
+
+
+def add_bottom_stamp_strip(base_img,
+                          first_line,
+                          second_line="",
+                          strip_height=80):
+    """Append a black strip containing up to two centered stamp lines."""
     base_rgb = to_clean_rgb(base_img)
     w, h = base_rgb.size
-    new_w = w + (border_width * 2)
-    new_h = h + (border_width * 2)
+    stamp_fields = [line for line in (first_line, second_line) if line]
+    has_two_stamp_fields = len(stamp_fields) > 1
+    if has_two_stamp_fields:
+        strip_height *= 2
 
-    canvas = Image.new("RGB", (new_w, new_h), (0, 0, 0))
-    canvas.paste(base_rgb, (border_width, border_width))
+    target_font_size = max(
+        1,
+        int(strip_height * (0.32 if has_two_stamp_fields else 0.45)),
+    )
+    font = get_scalable_font(target_font_size)
+    lines = []
+    for field in stamp_fields:
+        lines.extend(wrap_stamp_text(field, font, max(1, w - 20)))
 
-    if not border_text:
+    if lines:
+        draw_measure = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+        line_boxes = [
+            draw_measure.textbbox((0, 0), line, font=font) for line in lines
+        ]
+        line_heights = [bbox[3] - bbox[1] for bbox in line_boxes]
+        line_gap = max(1, target_font_size // 8) if len(lines) > 1 else 0
+        total_text_height = sum(line_heights) + line_gap * (len(lines) - 1)
+        vertical_padding = max(4, target_font_size // 4)
+        strip_height = max(
+            strip_height,
+            total_text_height + vertical_padding * 2,
+        )
+    else:
+        line_boxes = []
+        line_heights = []
+        line_gap = 0
+
+    canvas = Image.new("RGB", (w, h + strip_height), (0, 0, 0))
+    canvas.paste(base_rgb, (0, 0))
+    if not lines:
         return canvas
 
-    # Dynamic target font size scaled directly to border pixel height
-    target_font_size = max(16, int(border_width * 0.45))
-    font = get_scalable_font(target_font_size)
+    draw = ImageDraw.Draw(canvas)
+    total_text_height = sum(line_heights) + line_gap * (len(lines) - 1)
+    text_y = h + (strip_height - total_text_height) // 2
 
-    draw_temp = ImageDraw.Draw(canvas)
-    bbox = draw_temp.textbbox((0, 0), border_text, font=font)
-    tw = bbox[2] - bbox[0]
-    th = bbox[3] - bbox[1]
-
-    ts_w = max(1, int(math.ceil(tw)) + 20)
-    ts_h = max(1, int(math.ceil(th)) + 12)
-
-    # Render on solid black RGB surface to ensure perfectly anti-aliased white text without alpha fringe
-    text_strip = Image.new("RGB", (ts_w, ts_h), (0, 0, 0))
-    strip_draw = ImageDraw.Draw(text_strip)
-    strip_draw.text((10, 2), border_text, fill=(255, 255, 255), font=font)
-
-    # Lossless rotations for border orientations
-    top_strip = text_strip
-    # Use rotate() for compatibility with Pillow typing; expand to preserve full bounds
-    bottom_strip = text_strip.rotate(180, expand=True)
-    left_strip = text_strip.rotate(90, expand=True)
-    right_strip = text_strip.rotate(270, expand=True)
-
-    # Paste Top
-    canvas.paste(
-        top_strip,
-        (
-            (new_w - top_strip.width) // 2,
-            (border_width - top_strip.height) // 2,
-        ),
-    )
-
-    # Paste Bottom
-    canvas.paste(
-        bottom_strip,
-        (
-            (new_w - bottom_strip.width) // 2,
-            new_h - border_width + ((border_width - bottom_strip.height) // 2),
-        ),
-    )
-
-    # Paste Left
-    if left_strip.height <= h:
-        canvas.paste(
-            left_strip,
-            (
-                (border_width - left_strip.width) // 2,
-                (new_h - left_strip.height) // 2,
-            ),
-        )
-
-    # Paste Right
-    if right_strip.height <= h:
-        canvas.paste(
-            right_strip,
-            (
-                new_w - border_width +
-                ((border_width - right_strip.width) // 2),
-                (new_h - right_strip.height) // 2,
-            ),
-        )
+    for line, bbox, line_height in zip(lines, line_boxes, line_heights):
+        text_width = bbox[2] - bbox[0]
+        text_x = (w - text_width) // 2 - bbox[0]
+        draw.text((text_x, text_y - bbox[1]),
+                  line,
+                  fill=(255, 255, 255),
+                  font=font)
+        text_y += line_height + line_gap
 
     return canvas
 
@@ -364,21 +411,16 @@ class ImageProcessorApp:
         self.tk_orig_img = None
         self.tk_edit_img = None
 
-        self.opts = [
-            "",
-            "© 2026 Archive Corp",
-            "Public Domain",
-            "All Rights Reserved",
-            "CC BY-NC",
-        ]
-        self.locs = [
-            "",
-            "Headquarters",
-            "Field Site A",
-            "Storage Facility",
-            "External Lab",
-        ]
-        self.stats = ["", "Final", "Draft", "Confidential", "Archival"]
+        sites_path = os.path.join(os.path.dirname(__file__), SITES_FILE)
+        try:
+            self.locs = load_sites(sites_path)
+        except OSError as exc:
+            self.locs = []
+            messagebox.showerror(
+                "Site Settings Error",
+                f"Could not read the site list at:\n{sites_path}\n\n{exc}",
+                parent=self.root,
+            )
 
         self.create_layout()
         self.bind_hotkeys()
@@ -403,17 +445,13 @@ class ImageProcessorApp:
         )
         self.lbl_folder.pack(pady=(0, 10))
 
-        ttk.Label(self.left, text="Copyright / Owner").pack(anchor="w")
-        self.drop_copy = ttk.Combobox(self.left, values=self.opts)
-        self.drop_copy.pack(fill="x", pady=(0, 5))
-
         ttk.Label(self.left, text="Location / Site").pack(anchor="w")
-        self.drop_loc = ttk.Combobox(self.left, values=self.locs)
+        self.drop_loc = ttk.Combobox(self.left,
+                                     values=self.locs,
+                                     height=get_site_dropdown_height(
+                                         self.locs),
+                                     state="normal")
         self.drop_loc.pack(fill="x", pady=(0, 5))
-
-        ttk.Label(self.left, text="Status").pack(anchor="w")
-        self.drop_status = ttk.Combobox(self.left, values=self.stats)
-        self.drop_status.pack(fill="x", pady=(0, 5))
 
         ttk.Label(self.left, text="Notes").pack(anchor="w")
         self.txt_notes = ttk.Entry(self.left)
@@ -468,11 +506,10 @@ class ImageProcessorApp:
         )
         self.slider_bottom.pack(fill="x", pady=(0, 4))
 
-        for widget in (self.drop_copy, self.drop_loc, self.drop_status):
-            widget.bind("<<ComboboxSelected>>",
-                        lambda e: self.schedule_edited_preview())
-            widget.bind("<KeyRelease>",
-                        lambda e: self.schedule_edited_preview())
+        self.drop_loc.bind("<<ComboboxSelected>>",
+                           lambda e: self.schedule_edited_preview())
+        self.drop_loc.bind("<KeyRelease>",
+                           lambda e: self.schedule_edited_preview())
 
         self.txt_notes.bind("<FocusOut>",
                             lambda e: self.schedule_edited_preview())
@@ -757,17 +794,13 @@ class ImageProcessorApp:
 
         _, date_file_str, date_label_str = get_exif_data_and_dates(input_path)
 
-        copy_val = self.drop_copy.get().strip()
         loc_val = self.drop_loc.get().strip()
-        status_val = self.drop_status.get().strip()
         notes_val = self.txt_notes.get().strip()
 
         ext = os.path.splitext(filename)[1]
         new_fn_parts = [
             date_file_str,
-            sanitize_to_slug(copy_val),
             sanitize_to_slug(loc_val),
-            sanitize_to_slug(status_val),
             sanitize_to_slug(notes_val),
         ]
         new_filename = ("-".join(part for part in new_fn_parts if part) +
@@ -779,18 +812,15 @@ class ImageProcessorApp:
         self.lbl_old_fn.config(text=f"Original File: {filename}")
         self.lbl_new_fn.config(text=f"New File Preview: {new_filename}")
 
-        parts = [
-            date_label_str,
-            copy_val,
-            loc_val,
-            status_val,
-            notes_val,
-        ]
-        border_text = " | ".join(p for p in parts if p)
+        first_stamp_line = " | ".join(
+            part for part in (date_label_str, loc_val) if part)
 
-        border_thickness = int(max(img.size) * 0.05)
-        full_bordered = add_uniform_bordered_text(
-            img, border_text, border_width=border_thickness)
+        strip_height = max(24, int(max(img.size) * 0.05))
+        full_bordered = add_bottom_stamp_strip(
+            img,
+            first_stamp_line,
+            notes_val,
+            strip_height=strip_height)
 
         scale_factor = 320.0 / preview_max_dimension
 
@@ -828,16 +858,12 @@ class ImageProcessorApp:
         exif_obj, date_file_str, date_label_str = get_exif_data_and_dates(
             input_path)
 
-        copy_val = self.drop_copy.get().strip()
         loc_val = self.drop_loc.get().strip()
-        status_val = self.drop_status.get().strip()
         notes_val = self.txt_notes.get().strip()
 
         filename_parts = [
             date_file_str,
-            sanitize_to_slug(copy_val),
             sanitize_to_slug(loc_val),
-            sanitize_to_slug(status_val),
             sanitize_to_slug(notes_val),
         ]
         output_name = ("-".join(part for part in filename_parts if part) +
@@ -870,14 +896,15 @@ class ImageProcessorApp:
         if self.rotation_angle:
             img = img.rotate(self.rotation_angle, expand=True)
 
-        border_text = " | ".join(
-            x for x in
-            [date_label_str, copy_val, loc_val, status_val, notes_val] if x)
+        first_stamp_line = " | ".join(
+            part for part in (date_label_str, loc_val) if part)
 
-        border_thickness = int(max(img.size) * 0.05)
-        final_img = add_uniform_bordered_text(img,
-                                              border_text,
-                                              border_width=border_thickness)
+        strip_height = max(24, int(max(img.size) * 0.05))
+        final_img = add_bottom_stamp_strip(
+            img,
+            first_stamp_line,
+            notes_val,
+            strip_height=strip_height)
 
         save_kwargs = {}
         if exif_obj and ext.lower() in (".jpg", ".jpeg", ".tiff"):

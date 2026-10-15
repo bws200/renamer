@@ -1,8 +1,8 @@
 # File Photo Renamer
 
 A small desktop app for reviewing and processing image batches. It previews
-each image, lets you trim borders and rotate it, adds a metadata text border,
-and saves a processed copy with a descriptive filename.
+each image, lets you trim borders and rotate it, adds a stamped black strip
+below the image, and saves a processed copy with a descriptive filename.
 
 ## Features
 
@@ -10,7 +10,8 @@ and saves a processed copy with a descriptive filename.
 - Preview the original and processed image side by side.
 - Adjust crop percentages independently on all four edges.
 - Rotate images in 90-degree increments.
-- Add copyright/owner, location, status, and notes to the border and filename.
+- Choose a site/location and enter free-form notes for the bottom stamp and
+  filename.
 - Detect dark borders as an initial crop suggestion.
 - Debounce editing gestures and render interactive previews at reduced
   resolution for smoother work with large photos.
@@ -49,11 +50,17 @@ Then install requirements and run `python renamer.py` as above.
 1. Select a folder. Images directly in that folder with `.jpg`, `.jpeg`, `.png`,
    `.bmp`, or `.tiff` extensions are listed in filename order.
 2. Review the crop suggestion and adjust the sliders or rotation if needed.
-3. Enter any metadata to include in the border and output filename.
+3. Choose or type a site/location, then enter optional free-form notes.
 4. Choose **Process & Save**. The processed copy is written to
    `bordered_output`; the source image is left unchanged. Right Arrow skips,
    Left Arrow goes back, and Space processes the current image when a text
    field is not focused.
+
+   The Location/Site dropdown is populated from `sites.txt` next to `renamer.py`.
+   Edit that file with one site per line and restart the app to load your list.
+   Blank lines and lines whose first non-space character is `#` are ignored. The
+   dropdown remains editable for locations not in the list. It shows all sites
+   when there are 20 or fewer; longer lists show 20 at a time and can be scrolled.
 
 Empty folders show a no-images state with processing and navigation disabled.
 When the folder queue is exhausted, the app shows **Batch complete**, disables
@@ -66,6 +73,13 @@ hyphen-separated slugs. The border label includes the same timestamp in
 included. The app reads `DateTimeOriginal` first, then `DateTime`; if neither
 contains a usable date, it uses the filesystem timestamp: creation time on
 Windows and metadata-change time on many Unix-like systems.
+
+The stamp is rendered in a black strip appended below the image after cropping
+and rotation, so it remains at the bottom in every photo orientation. Its first
+line shows the capture timestamp and site/location; its second line shows the
+free-form notes. When both lines are present, the black strip is twice as tall
+to give the text more room. Stamp text wraps to additional centered lines when
+it would exceed the photo's width, and the strip grows to fit those lines.
 
 If a destination name already exists, the app adds a numeric suffix such as
 `-2` before the extension. It also opens the destination in exclusive-create

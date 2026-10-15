@@ -1,26 +1,60 @@
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from PIL import ExifTags, Image
+from PIL import ExifTags, Image, ImageDraw, ImageFont
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import renamer
 from renamer import (
     PREVIEW_DEBOUNCE_MS,
     PREVIEW_MAX_DIMENSION,
+    SITE_DROPDOWN_MAX_HEIGHT,
     ImageProcessorApp,
+    add_bottom_stamp_strip,
     get_exif_data_and_dates,
+    get_site_dropdown_height,
     get_unique_output_path,
+    load_sites,
     resize_to_fit,
     sanitize_to_slug,
     save_image_exclusively,
     strip_four_side_border,
+    wrap_stamp_text,
 )
 
 
 class RenamerTests(unittest.TestCase):
+    def test_site_dropdown_shows_all_sites_up_to_twenty_rows(self):
+        self.assertEqual(get_site_dropdown_height([]), 1)
+        self.assertEqual(get_site_dropdown_height(["A", "B"]), 2)
+        self.assertEqual(get_site_dropdown_height(["Site"] * 20), 20)
+        self.assertEqual(
+            get_site_dropdown_height(["Site"] * 25),
+            SITE_DROPDOWN_MAX_HEIGHT,
+        )
+
+    def test_load_sites_reads_entries_and_skips_blank_or_comment_lines(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = Path(temp_dir) / "sites.txt"
+            settings_path.write_text(
+                "# Example sites\n\nHeadquarters\n  Field Site A  \n"
+                " # another comment\nExternal Lab\n",
+                encoding="utf-8",
+            )
+
+            sites = load_sites(settings_path)
+
+        self.assertEqual(sites, [
+            "Headquarters",
+            "Field Site A",
+            "External Lab",
+        ])
+
     def test_capture_date_is_read_from_exif_ifd(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             image_path = Path(temp_dir) / "capture.jpg"
@@ -143,6 +177,84 @@ class RenamerTests(unittest.TestCase):
         )
 
         self.assertEqual(cropped.size, (85, 70))
+
+    def test_stamp_strip_adds_black_only_below_image(self):
+        image = Image.new("RGB", (40, 30), (20, 80, 140))
+
+        stamped = add_bottom_stamp_strip(image, "", strip_height=12)
+
+        self.assertEqual(stamped.size, (40, 42))
+        self.assertEqual(stamped.crop((0, 0, 40, 30)).tobytes(),
+                         image.tobytes())
+        self.assertEqual(stamped.crop((0, 30, 40, 42)).getextrema(),
+                         ((0, 0), (0, 0), (0, 0)))
+
+    def test_stamp_strip_stays_horizontal_below_rotated_photo(self):
+        image = Image.new("RGB", (40, 80), (20, 80, 140)).rotate(90,
+                                                                 expand=True)
+
+        with patch.object(renamer, "get_scalable_font",
+                          return_value=ImageFont.load_default()):
+            stamped = add_bottom_stamp_strip(image, "STAMP", strip_height=20)
+
+        self.assertEqual(stamped.size, (80, 60))
+        self.assertEqual(stamped.crop((0, 0, 80, 40)).tobytes(),
+                         image.tobytes())
+        self.assertEqual(stamped.getpixel((0, 59)), (0, 0, 0))
+        text_bbox = stamped.crop((0, 40, 80, 60)).convert("L").getbbox()
+        assert text_bbox is not None
+        text_width = text_bbox[2] - text_bbox[0]
+        text_height = text_bbox[3] - text_bbox[1]
+        self.assertGreater(text_width, text_height)
+
+    def test_stamp_strip_places_notes_on_second_line(self):
+        image = Image.new("RGB", (120, 30), (20, 80, 140))
+
+        with patch.object(renamer, "get_scalable_font",
+                          return_value=ImageFont.load_default()):
+            stamped = add_bottom_stamp_strip(
+                image, "SITE", "NOTE", strip_height=40)
+
+        self.assertEqual(stamped.size, (120, 110))
+        self.assertEqual(stamped.crop((0, 0, 120, 30)).tobytes(),
+                         image.tobytes())
+
+        strip = stamped.crop((0, 30, 120, 110)).convert("L")
+        first_line = strip.crop((0, 0, 120, 40)).getbbox()
+        second_line = strip.crop((0, 40, 120, 80)).getbbox()
+        self.assertIsNotNone(first_line)
+        self.assertIsNotNone(second_line)
+
+    def test_stamp_text_wraps_long_words_to_photo_width(self):
+        font = ImageFont.load_default()
+        text = "A verylongunbrokenlocationname"
+        max_width = 48
+
+        wrapped_lines = wrap_stamp_text(text, font, max_width)
+        draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+
+        self.assertGreater(len(wrapped_lines), 1)
+        self.assertEqual(" ".join(wrapped_lines).replace(" ", ""), text.replace(
+            " ", ""))
+        for line in wrapped_lines:
+            bbox = draw.textbbox((0, 0), line, font=font)
+            self.assertLessEqual(bbox[2] - bbox[0], max_width)
+
+    def test_stamp_strip_grows_to_fit_wrapped_text(self):
+        image = Image.new("RGB", (60, 30), (20, 80, 140))
+
+        with patch.object(renamer, "get_scalable_font",
+                          return_value=ImageFont.load_default()):
+            stamped = add_bottom_stamp_strip(
+                image,
+                "2024:10:16 11:00:00 | Very long location name",
+                "These notes need several wrapped lines to fit",
+                strip_height=24,
+            )
+
+        self.assertGreater(stamped.height, image.height + 2 * 24)
+        self.assertEqual(stamped.crop((0, 0, 60, 30)).tobytes(),
+                         image.tobytes())
 
     def test_unique_output_path_skips_existing_suffixes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
