@@ -54,6 +54,13 @@ Then install requirements and run `python renamer.py` as above.
 4. Choose **Process & Save**. The processed copy is written to
    `bordered_output`; the source image is left unchanged.
 
+   The app stores the chosen site and notes in
+   `bordered_output/processing_history.json`, keyed by a SHA-256 fingerprint of
+   the original photo. When the same photo is loaded again, those fields are
+   restored; unrecognized or changed photos start with blank fields. This
+   history is created for photos processed with this feature and does not
+   recover metadata from older output files.
+
    The Location/Site dropdown is populated from `sites.txt` next to `renamer.py`.
    Edit that file with one site per line and restart the app to load your list.
    Blank lines and lines whose first non-space character is `#` are ignored. The

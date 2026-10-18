@@ -1,6 +1,9 @@
+import hashlib
+import json
 import os
 import re
 import sys
+import tempfile
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -12,6 +15,7 @@ PREVIEW_MAX_DIMENSION = 1200
 PREVIEW_DEBOUNCE_MS = 120
 SITE_DROPDOWN_MAX_HEIGHT = 20
 SITES_FILE = "sites.txt"
+PROCESSING_HISTORY_FILE = "processing_history.json"
 
 
 def to_clean_rgb(img):
@@ -133,6 +137,61 @@ def get_unique_output_path(output_dir, output_name):
         candidate = os.path.join(output_dir, f"{stem}-{suffix}{extension}")
         suffix += 1
     return candidate
+
+
+def get_file_fingerprint(file_path):
+    """Return a SHA-256 fingerprint for a file's contents."""
+    digest = hashlib.sha256()
+    with open(file_path, "rb") as source_file:
+        for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_processing_history(history_path):
+    """Load saved site and note values indexed by source-file fingerprint."""
+    try:
+        with open(history_path, encoding="utf-8") as history_file:
+            history = json.load(history_file)
+    except FileNotFoundError:
+        return {}
+
+    if not isinstance(history, dict):
+        raise ValueError("Processing history must contain a JSON object.")
+
+    for fingerprint, record in history.items():
+        if not isinstance(fingerprint, str) or not isinstance(record, dict):
+            raise ValueError("Processing history contains an invalid record.")
+        if not all(
+                isinstance(record.get(field), str)
+                for field in ("site", "notes", "source_name", "output_name")):
+            raise ValueError("Processing history contains an incomplete record.")
+
+    return history
+
+
+def save_processing_history(history_path, history):
+    """Atomically write processing history so an interrupted save cannot truncate it."""
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=os.path.dirname(history_path),
+                prefix=".processing-history-",
+                suffix=".tmp",
+                delete=False) as history_file:
+            temporary_path = history_file.name
+            json.dump(history, history_file, ensure_ascii=False, indent=2)
+            history_file.write("\n")
+        os.replace(temporary_path, history_path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            try:
+                os.remove(temporary_path)
+            except FileNotFoundError:
+                pass
 
 
 def save_image_exclusively(image, output_path, image_format, save_kwargs=None):
@@ -403,8 +462,10 @@ class ImageProcessorApp:
         self.input_folder = ""
         self.files = []
         self.current_index = 0
+        self.processing_history = {}
 
         self.current_pil_img = None
+        self.current_fingerprint = None
         self.rotation_angle = 0
         self._preview_after_id = None
 
@@ -641,6 +702,7 @@ class ImageProcessorApp:
     def _show_empty_state(self):
         self._cancel_scheduled_preview()
         self.current_pil_img = None
+        self.current_fingerprint = None
         self.rotation_angle = 0
         self.tk_orig_img = None
         self.tk_edit_img = None
@@ -674,7 +736,20 @@ class ImageProcessorApp:
         if not selected:
             return
 
+        output_dir = os.path.join(selected, "bordered_output")
+        history_path = os.path.join(output_dir, PROCESSING_HISTORY_FILE)
+        try:
+            processing_history = load_processing_history(history_path)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror(
+                "Processing History Error",
+                f"Could not read processing history at:\n{history_path}\n\n{exc}",
+                parent=self.root,
+            )
+            return
+
         self.input_folder = selected
+        self.processing_history = processing_history
         self.lbl_folder.config(text=f"Folder: {selected}", foreground="black")
 
         exts = (".jpg", ".jpeg", ".png", ".bmp", ".tiff")
@@ -702,8 +777,11 @@ class ImageProcessorApp:
         self.rotation_angle = 0
         filename = self.files[self.current_index]
         self.current_pil_img = None
+        self.current_fingerprint = None
         self.tk_orig_img = None
         self.tk_edit_img = None
+        self.drop_loc.set("")
+        self.txt_notes.delete(0, tk.END)
         self._update_navigation_buttons()
 
         self.lbl_cnt.config(
@@ -715,6 +793,13 @@ class ImageProcessorApp:
 
         try:
             path = os.path.join(self.input_folder, filename)
+            self.current_fingerprint = get_file_fingerprint(path)
+            previous_record = self.processing_history.get(
+                self.current_fingerprint)
+            if previous_record:
+                self.drop_loc.set(previous_record["site"])
+                self.txt_notes.insert(0, previous_record["notes"])
+
             with Image.open(path) as raw_img:
                 transposed = ImageOps.exif_transpose(raw_img)
                 self.current_pil_img = to_clean_rgb(transposed)
@@ -833,6 +918,11 @@ class ImageProcessorApp:
         if self.current_pil_img is None:
             messagebox.showerror("Error", "No image loaded to process.")
             return
+        if self.current_fingerprint is None:
+            messagebox.showerror(
+                "Error",
+                "The current image has no processing-history fingerprint.")
+            return
 
         filename = self.files[self.current_index]
         input_path = os.path.join(self.input_folder, filename)
@@ -922,6 +1012,25 @@ class ImageProcessorApp:
             messagebox.showerror("Save Error",
                                  f"Failed to save {output_path}:\n\n{exc}")
             return
+
+        updated_history = dict(self.processing_history)
+        updated_history[self.current_fingerprint] = {
+            "site": loc_val,
+            "notes": notes_val,
+            "source_name": filename,
+            "output_name": output_name,
+        }
+        history_path = os.path.join(output_dir, PROCESSING_HISTORY_FILE)
+        try:
+            save_processing_history(history_path, updated_history)
+        except (OSError, ValueError) as exc:
+            messagebox.showwarning(
+                "Processing History Not Saved",
+                f"The photo was saved as {output_name}, but its site and notes "
+                f"could not be saved to processing history:\n\n{exc}",
+            )
+        else:
+            self.processing_history = updated_history
 
         self.txt_notes.delete(0, tk.END)
         self.current_index += 1

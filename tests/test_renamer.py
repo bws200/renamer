@@ -3,7 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from PIL import ExifTags, Image, ImageDraw, ImageFont
 
@@ -17,11 +17,14 @@ from renamer import (
     ImageProcessorApp,
     add_bottom_stamp_strip,
     get_exif_data_and_dates,
+    get_file_fingerprint,
     get_site_dropdown_height,
     get_unique_output_path,
     load_sites,
+    load_processing_history,
     resize_to_fit,
     sanitize_to_slug,
+    save_processing_history,
     save_image_exclusively,
     strip_four_side_border,
     wrap_stamp_text,
@@ -54,6 +57,42 @@ class RenamerTests(unittest.TestCase):
             "Field Site A",
             "External Lab",
         ])
+
+    def test_processing_history_round_trips_saved_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            history_path = Path(temp_dir) / "processing_history.json"
+            history = {
+                "source-fingerprint": {
+                    "site": "Field Site",
+                    "notes": "North gate",
+                    "source_name": "photo.jpg",
+                    "output_name": "20240102-field-site-north-gate.jpg",
+                },
+            }
+
+            self.assertEqual(load_processing_history(history_path), {})
+            save_processing_history(history_path, history)
+
+            self.assertEqual(load_processing_history(history_path), history)
+
+    def test_processing_history_rejects_invalid_json_shape(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            history_path = Path(temp_dir) / "processing_history.json"
+            history_path.write_text("[]", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "JSON object"):
+                load_processing_history(history_path)
+
+    def test_file_fingerprint_tracks_file_contents(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = Path(temp_dir) / "photo.jpg"
+            file_path.write_bytes(b"first image")
+            first_fingerprint = get_file_fingerprint(file_path)
+            file_path.write_bytes(b"second image")
+
+            second_fingerprint = get_file_fingerprint(file_path)
+
+        self.assertNotEqual(first_fingerprint, second_fingerprint)
 
     def test_capture_date_is_read_from_exif_ifd(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -328,6 +367,7 @@ class RenamerTests(unittest.TestCase):
         app.current_index = 0
         app._preview_after_id = None
         app.current_pil_img = Image.new("RGB", (4, 3))
+        app.current_fingerprint = "previous-fingerprint"
         app.rotation_angle = 90
         app.tk_orig_img = Mock()
         app.tk_edit_img = Mock()
@@ -343,6 +383,7 @@ class RenamerTests(unittest.TestCase):
         app._show_empty_state()
 
         self.assertIsNone(app.current_pil_img)
+        self.assertIsNone(app.current_fingerprint)
         self.assertEqual(app.rotation_angle, 0)
         self.assertIsNone(app.tk_orig_img)
         self.assertIsNone(app.tk_edit_img)
@@ -425,13 +466,22 @@ class RenamerTests(unittest.TestCase):
 
     def test_loading_valid_image_enables_processing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            Image.new("RGB", (20, 16), "white").save(
-                Path(temp_dir) / "photo.png")
+            image_path = Path(temp_dir) / "photo.png"
+            Image.new("RGB", (20, 16), "white").save(image_path)
             app = ImageProcessorApp.__new__(ImageProcessorApp)
             app.files = ["photo.png"]
             app.input_folder = temp_dir
             app.current_index = 0
             app.current_pil_img = None
+            fingerprint = get_file_fingerprint(image_path)
+            app.processing_history = {
+                fingerprint: {
+                    "site": "Field Site",
+                    "notes": "North gate",
+                    "source_name": "photo.png",
+                    "output_name": "processed-photo.png",
+                },
+            }
             app.rotation_angle = 0
             app._preview_after_id = None
             app.tk_orig_img = None
@@ -452,6 +502,8 @@ class RenamerTests(unittest.TestCase):
             app.lbl_right = Mock()
             app.lbl_top = Mock()
             app.lbl_bottom = Mock()
+            app.drop_loc = Mock()
+            app.txt_notes = Mock()
             app.update_edited_mockup = Mock()
 
             with patch.object(renamer.ImageTk, "PhotoImage",
@@ -459,6 +511,17 @@ class RenamerTests(unittest.TestCase):
                 app.load_preview()
 
         self.assertIsNotNone(app.current_pil_img)
+        self.assertIsNotNone(app.current_fingerprint)
+        self.assertEqual(app.drop_loc.set.call_args_list, [
+            call(""),
+            call("Field Site"),
+        ])
+        self.assertEqual(app.txt_notes.delete.call_args_list, [
+            call(0, renamer.tk.END),
+        ])
+        self.assertEqual(app.txt_notes.insert.call_args_list, [
+            call(0, "North gate"),
+        ])
         app.btn_process.config.assert_called_with(state="normal")
         app.btn_skip.config.assert_called_with(state="normal")
         app.btn_back.config.assert_called_with(state="disabled")
@@ -472,6 +535,7 @@ class RenamerTests(unittest.TestCase):
             app.input_folder = temp_dir
             app.current_index = 0
             app.current_pil_img = Image.new("RGB", (4, 3))
+            app.processing_history = {}
             app.rotation_angle = 0
             app._preview_after_id = None
             app.tk_orig_img = Mock()
@@ -484,11 +548,15 @@ class RenamerTests(unittest.TestCase):
             app.btn_process = Mock()
             app.btn_skip = Mock()
             app.btn_back = Mock()
+            app.drop_loc = Mock()
+            app.txt_notes = Mock()
 
             with patch.object(renamer.messagebox, "showerror"):
                 app.load_preview()
 
         self.assertIsNone(app.current_pil_img)
+        app.drop_loc.set.assert_called_once_with("")
+        app.txt_notes.delete.assert_called_once_with(0, renamer.tk.END)
         app.btn_process.config.assert_called_with(state="disabled")
         app.btn_skip.config.assert_called_with(state="normal")
 
