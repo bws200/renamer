@@ -155,28 +155,6 @@ def get_file_fingerprint(file_path):
     return digest.hexdigest()
 
 
-def find_prior_processed_output(source_path, output_dir):
-    """Find the newest output whose filename starts with the source timestamp."""
-    _, timestamp, _ = get_exif_data_and_dates(source_path)
-    source_extension = os.path.splitext(source_path)[1].lower()
-    candidates = []
-    try:
-        with os.scandir(output_dir) as entries:
-            for entry in entries:
-                stem, extension = os.path.splitext(entry.name)
-                if (entry.is_file()
-                        and extension.lower() == source_extension
-                        and (stem == timestamp
-                             or stem.startswith(f"{timestamp}-"))):
-                    candidates.append(entry.path)
-    except FileNotFoundError:
-        return None
-
-    if not candidates:
-        return None
-    return max(candidates, key=os.path.getmtime)
-
-
 def parse_stamp_text(ocr_text):
     """Interpret OCR output as the stamped site line followed by notes."""
     lines = [
@@ -192,11 +170,14 @@ def parse_stamp_text(ocr_text):
         r"\s*(?:\|\s*)?(.*)$",
         lines[0],
     )
-    if timestamp_match:
-        site = timestamp_match.group(1).strip()
-        notes = " ".join(lines[1:])
+    if not timestamp_match:
+        return "", ""
+
+    site = timestamp_match.group(1).strip()
+    if not site and len(lines) > 1:
+        site = lines[1]
+        notes = " ".join(lines[2:])
     else:
-        site = lines[0]
         notes = " ".join(lines[1:])
     return site, notes
 
@@ -209,7 +190,8 @@ def read_stamp_fields(image_path):
         pixels = np.asarray(image)
         top = height
         for row in range(height - 1, max(-1, height - height // 3 - 1), -1):
-            if np.count_nonzero(pixels[row] < 70) / width < 0.85:
+            dark_ratio = np.count_nonzero(pixels[row] < 70) / width
+            if dark_ratio < 0.5:
                 break
             top = row
 
@@ -883,31 +865,27 @@ class ImageProcessorApp:
                 self.drop_loc.set(previous_record["site"])
                 self.txt_notes.insert(0, previous_record["notes"])
             else:
-                output_dir = os.path.join(
-                    self.input_folder, "bordered_output")
-                prior_output = find_prior_processed_output(path, output_dir)
-                if prior_output:
-                    try:
-                        site, notes = read_stamp_fields(prior_output)
-                    except (
-                            OSError,
-                            pytesseract.TesseractNotFoundError,
-                            pytesseract.TesseractError) as exc:
-                        if not self._ocr_warning_shown:
-                            messagebox.showwarning(
-                                "Stamp OCR Unavailable",
-                                "Could not read text from the previous "
-                                f"processed image:\n{prior_output}\n\n{exc}\n\n"
-                                "Install the Tesseract OCR engine and ensure "
-                                "it is available on PATH to enable OCR recovery.",
-                                parent=self.root,
-                            )
-                            self._ocr_warning_shown = True
-                    else:
-                        if site:
-                            self.drop_loc.set(site)
-                        if notes:
-                            self.txt_notes.insert(0, notes)
+                try:
+                    site, notes = read_stamp_fields(path)
+                except (
+                        OSError,
+                        pytesseract.TesseractNotFoundError,
+                        pytesseract.TesseractError) as exc:
+                    if not self._ocr_warning_shown:
+                        messagebox.showwarning(
+                            "Stamp OCR Unavailable",
+                            "Could not read text from the selected photo:\n"
+                            f"{path}\n\n{exc}\n\n"
+                            "Install the Tesseract OCR engine and ensure "
+                            "it is available on PATH to enable OCR recovery.",
+                            parent=self.root,
+                        )
+                        self._ocr_warning_shown = True
+                else:
+                    if site:
+                        self.drop_loc.set(site)
+                    if notes:
+                        self.txt_notes.insert(0, notes)
 
             with Image.open(path) as raw_img:
                 transposed = ImageOps.exif_transpose(raw_img)

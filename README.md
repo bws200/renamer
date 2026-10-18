@@ -76,13 +76,13 @@ Then install requirements and run `python renamer.py` as above.
    history is created for photos processed with this feature and does not
    recover metadata from older output files.
 
-   If no history match exists, the app looks for a prior output with the
-   source photo's timestamp in its filename and uses Tesseract OCR to read its
-   black stamp strip. The first stamped line (after the timestamp) is placed in
-   the site field; subsequent lines are combined into notes. OCR results can
-   be imperfect and should be checked before saving. If multiple outputs share
-   the same timestamp, the newest one is used. This fallback requires the
-   separately installed Tesseract engine; a warning is shown if it is missing.
+   If no history match exists, the app uses Tesseract OCR on the selected
+   source photo itself; it does not read images from `bordered_output`. Text
+   following a timestamp on the same line is treated as the site; if the
+   timestamp is on its own line, the next line is treated as the site.
+   Remaining lines are combined into notes. OCR results can be imperfect and
+   should be checked before saving. This fallback requires the separately
+   installed Tesseract engine; a warning is shown if it is missing.
 
    The Location/Site dropdown is populated from `sites.txt` next to `renamer.py`.
    Edit that file with one site per line and restart the app to load your list.

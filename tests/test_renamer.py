@@ -21,7 +21,6 @@ from renamer import (
     get_file_fingerprint,
     get_site_dropdown_height,
     get_unique_output_path,
-    find_prior_processed_output,
     load_sites,
     load_processing_history,
     parse_stamp_text,
@@ -98,23 +97,6 @@ class RenamerTests(unittest.TestCase):
 
         self.assertNotEqual(first_fingerprint, second_fingerprint)
 
-    def test_prior_processed_output_matches_source_timestamp(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            output_dir = Path(temp_dir) / "bordered_output"
-            output_dir.mkdir()
-            source_path = Path(temp_dir) / "source.jpg"
-            exif = Image.Exif()
-            exif[ExifTags.Base.DateTime] = "2024:05:06 07:08:09"
-            Image.new("RGB", (12, 9)).save(source_path, exif=exif)
-            output_path = output_dir / "20240506-070809-site-note.jpg"
-            output_path.touch()
-            (output_dir / "20240506-0708090-wrong.jpg").touch()
-
-            found_output = find_prior_processed_output(
-                str(source_path), str(output_dir))
-
-        self.assertEqual(found_output, str(output_path))
-
     def test_stamp_ocr_parser_separates_site_from_notes(self):
         self.assertEqual(
             parse_stamp_text(
@@ -124,11 +106,30 @@ class RenamerTests(unittest.TestCase):
             ("Rangiora", "Flood inspection North bank"),
         )
 
+    def test_stamp_ocr_parser_uses_line_after_standalone_timestamp_as_site(self):
+        self.assertEqual(
+            parse_stamp_text(
+                "2026:09:18 12:26:16\nCabinet switchboard\n"
+                "Inspection notes\nNorth wall"
+            ),
+            ("Cabinet switchboard", "Inspection notes North wall"),
+        )
+
+    def test_stamp_ocr_parser_rejects_text_without_a_timestamp(self):
+        self.assertEqual(
+            parse_stamp_text("Cabinet switchboard\nInspection notes"),
+            ("", ""),
+        )
+
     def test_stamp_ocr_reads_bottom_black_strip(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             image_path = Path(temp_dir) / "processed.png"
-            image = Image.new("RGB", (100, 80), "white")
-            ImageDraw.Draw(image).rectangle((0, 60, 99, 79), fill="black")
+            image = add_bottom_stamp_strip(
+                Image.new("RGB", (100, 80), "white"),
+                "2024:05:06 07:08:09 | Rangiora",
+                "North bank",
+                strip_height=20,
+            )
             image.save(image_path)
 
             with patch.object(
@@ -140,7 +141,9 @@ class RenamerTests(unittest.TestCase):
 
         self.assertEqual(fields, ("Rangiora", "North bank"))
         ocr_image = ocr.call_args.args[0]
-        self.assertEqual(ocr_image.size, (300, 60))
+        self.assertEqual(ocr_image.width, 300)
+        self.assertGreaterEqual(ocr_image.height, 120)
+        self.assertEqual(ocr_image.getextrema(), (0, 255))
 
     def test_capture_date_is_read_from_exif_ifd(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -582,7 +585,7 @@ class RenamerTests(unittest.TestCase):
         app.btn_back.config.assert_called_with(state="disabled")
         app.update_edited_mockup.assert_called_once_with()
 
-    def test_loading_image_uses_ocr_when_processing_history_has_no_match(self):
+    def test_loading_stamped_image_uses_its_own_ocr_when_history_has_no_match(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             Image.new("RGB", (20, 16), "white").save(
                 Path(temp_dir) / "photo.png")
@@ -622,14 +625,9 @@ class RenamerTests(unittest.TestCase):
             with (
                 patch.object(
                     renamer,
-                    "find_prior_processed_output",
-                    return_value="prior-output.png",
-                ),
-                patch.object(
-                    renamer,
                     "read_stamp_fields",
                     return_value=("Recovered Site", "Recovered notes"),
-                ),
+                ) as read_stamp,
                 patch.object(renamer.ImageTk, "PhotoImage",
                              return_value=object()),
             ):
@@ -640,6 +638,10 @@ class RenamerTests(unittest.TestCase):
             call("Recovered Site"),
         ])
         app.txt_notes.insert.assert_called_once_with(0, "Recovered notes")
+        self.assertEqual(
+            read_stamp.call_args.args[0],
+            os.path.join(temp_dir, "photo.png"),
+        )
         app.update_edited_mockup.assert_called_once_with()
 
     def test_failed_image_load_disables_processing_but_allows_skip(self):
