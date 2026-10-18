@@ -52,9 +52,7 @@ Then install requirements and run `python renamer.py` as above.
 2. Review the crop suggestion and adjust the sliders or rotation if needed.
 3. Choose or type a site/location, then enter optional free-form notes.
 4. Choose **Process & Save**. The processed copy is written to
-   `bordered_output`; the source image is left unchanged. Right Arrow skips,
-   Left Arrow goes back, and Space processes the current image when a text
-   field is not focused.
+   `bordered_output`; the source image is left unchanged.
 
    The Location/Site dropdown is populated from `sites.txt` next to `renamer.py`.
    Edit that file with one site per line and restart the app to load your list.

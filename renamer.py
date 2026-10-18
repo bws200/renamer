@@ -423,7 +423,6 @@ class ImageProcessorApp:
             )
 
         self.create_layout()
-        self.bind_hotkeys()
 
     def create_layout(self):
         self.left = ttk.Frame(self.root, padding=15, width=360)
@@ -537,7 +536,7 @@ class ImageProcessorApp:
 
         self.btn_process = tk.Button(
             self.left,
-            text="Process & Save (Space)",
+            text="Process & Save",
             command=self.process_current,
             bg="#2ecc71",
             fg="white",
@@ -548,7 +547,7 @@ class ImageProcessorApp:
 
         self.btn_back = tk.Button(
             self.left,
-            text="Previous Image (Left)",
+            text="Previous Image",
             command=self.prev_current,
             bg="#34495e",
             fg="white",
@@ -559,7 +558,7 @@ class ImageProcessorApp:
 
         self.btn_skip = tk.Button(
             self.left,
-            text="Skip Image (Right)",
+            text="Skip Image",
             command=self.skip_current,
             bg="#95a5a6",
             fg="white",
@@ -608,11 +607,6 @@ class ImageProcessorApp:
 
         self.canvas_edit = tk.Label(container, bg="#eaeaea")
         self.canvas_edit.grid(row=1, column=1, sticky="nsew", padx=5, pady=5)
-
-    def bind_hotkeys(self):
-        self.root.bind("<Right>", lambda e: self.skip_current())
-        self.root.bind("<Left>", lambda e: self.prev_current())
-        self.root.bind("<space>", self.process_current_event)
 
     def _cancel_scheduled_preview(self):
         if self._preview_after_id is not None:
@@ -832,13 +826,6 @@ class ImageProcessorApp:
 
         self.tk_edit_img = ImageTk.PhotoImage(preview_bordered)
         self.canvas_edit.config(image=self.tk_edit_img)
-
-    def process_current_event(self, event):
-        focused = self.root.focus_get()
-        if isinstance(focused, (ttk.Entry, ttk.Combobox, tk.Entry)):
-            return
-        if self.btn_process["state"] == "normal":
-            self.process_current()
 
     def process_current(self):
         if self.current_index >= len(self.files):
