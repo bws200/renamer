@@ -16,12 +16,16 @@ from renamer import (
     SITE_DROPDOWN_MAX_HEIGHT,
     ImageProcessorApp,
     add_bottom_stamp_strip,
+    build_output_filename,
     get_exif_data_and_dates,
     get_file_fingerprint,
     get_site_dropdown_height,
     get_unique_output_path,
+    find_prior_processed_output,
     load_sites,
     load_processing_history,
+    parse_stamp_text,
+    read_stamp_fields,
     resize_to_fit,
     sanitize_to_slug,
     save_processing_history,
@@ -93,6 +97,50 @@ class RenamerTests(unittest.TestCase):
             second_fingerprint = get_file_fingerprint(file_path)
 
         self.assertNotEqual(first_fingerprint, second_fingerprint)
+
+    def test_prior_processed_output_matches_source_timestamp(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "bordered_output"
+            output_dir.mkdir()
+            source_path = Path(temp_dir) / "source.jpg"
+            exif = Image.Exif()
+            exif[ExifTags.Base.DateTime] = "2024:05:06 07:08:09"
+            Image.new("RGB", (12, 9)).save(source_path, exif=exif)
+            output_path = output_dir / "20240506-070809-site-note.jpg"
+            output_path.touch()
+            (output_dir / "20240506-0708090-wrong.jpg").touch()
+
+            found_output = find_prior_processed_output(
+                str(source_path), str(output_dir))
+
+        self.assertEqual(found_output, str(output_path))
+
+    def test_stamp_ocr_parser_separates_site_from_notes(self):
+        self.assertEqual(
+            parse_stamp_text(
+                "2024:05:06 07:08:09 | Rangiora\nFlood inspection\n"
+                "North bank"
+            ),
+            ("Rangiora", "Flood inspection North bank"),
+        )
+
+    def test_stamp_ocr_reads_bottom_black_strip(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "processed.png"
+            image = Image.new("RGB", (100, 80), "white")
+            ImageDraw.Draw(image).rectangle((0, 60, 99, 79), fill="black")
+            image.save(image_path)
+
+            with patch.object(
+                    renamer.pytesseract,
+                    "image_to_string",
+                    return_value="2024:05:06 07:08:09 | Rangiora\nNorth bank"
+            ) as ocr:
+                fields = read_stamp_fields(str(image_path))
+
+        self.assertEqual(fields, ("Rangiora", "North bank"))
+        ocr_image = ocr.call_args.args[0]
+        self.assertEqual(ocr_image.size, (300, 60))
 
     def test_capture_date_is_read_from_exif_ifd(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -202,6 +250,13 @@ class RenamerTests(unittest.TestCase):
         self.assertEqual(
             sanitize_to_slug(" © Field Site A: #2! "),
             "field-site-a-2",
+        )
+
+    def test_output_filename_uses_timestamp_and_site_not_stamp_notes(self):
+        self.assertEqual(
+            build_output_filename(
+                "20240506-070809", "Rangiora Field Site", ".JPG"),
+            "20240506-070809-rangiora-field-site.jpg",
         )
 
     def test_crop_trims_each_requested_edge(self):
@@ -525,6 +580,66 @@ class RenamerTests(unittest.TestCase):
         app.btn_process.config.assert_called_with(state="normal")
         app.btn_skip.config.assert_called_with(state="normal")
         app.btn_back.config.assert_called_with(state="disabled")
+        app.update_edited_mockup.assert_called_once_with()
+
+    def test_loading_image_uses_ocr_when_processing_history_has_no_match(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Image.new("RGB", (20, 16), "white").save(
+                Path(temp_dir) / "photo.png")
+            app = ImageProcessorApp.__new__(ImageProcessorApp)
+            app.files = ["photo.png"]
+            app.input_folder = temp_dir
+            app.current_index = 0
+            app.current_pil_img = None
+            app.current_fingerprint = None
+            app.processing_history = {}
+            app.rotation_angle = 0
+            app._preview_after_id = None
+            app.tk_orig_img = None
+            app.tk_edit_img = None
+            app._ocr_warning_shown = False
+            app.root = Mock()
+            app.lbl_cnt = Mock()
+            app.lbl_old_fn = Mock()
+            app.lbl_new_fn = Mock()
+            app.canvas_orig = Mock()
+            app.canvas_edit = Mock()
+            app.btn_process = Mock()
+            app.btn_skip = Mock()
+            app.btn_back = Mock()
+            app.slider_left = Mock()
+            app.slider_right = Mock()
+            app.slider_top = Mock()
+            app.slider_bottom = Mock()
+            app.lbl_left = Mock()
+            app.lbl_right = Mock()
+            app.lbl_top = Mock()
+            app.lbl_bottom = Mock()
+            app.drop_loc = Mock()
+            app.txt_notes = Mock()
+            app.update_edited_mockup = Mock()
+
+            with (
+                patch.object(
+                    renamer,
+                    "find_prior_processed_output",
+                    return_value="prior-output.png",
+                ),
+                patch.object(
+                    renamer,
+                    "read_stamp_fields",
+                    return_value=("Recovered Site", "Recovered notes"),
+                ),
+                patch.object(renamer.ImageTk, "PhotoImage",
+                             return_value=object()),
+            ):
+                app.load_preview()
+
+        self.assertEqual(app.drop_loc.set.call_args_list, [
+            call(""),
+            call("Recovered Site"),
+        ])
+        app.txt_notes.insert.assert_called_once_with(0, "Recovered notes")
         app.update_edited_mockup.assert_called_once_with()
 
     def test_failed_image_load_disables_processing_but_allows_skip(self):

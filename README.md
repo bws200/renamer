@@ -10,13 +10,14 @@ below the image, and saves a processed copy with a descriptive filename.
 - Preview the original and processed image side by side.
 - Adjust crop percentages independently on all four edges.
 - Rotate images in 90-degree increments.
-- Choose a site/location and enter free-form notes for the bottom stamp and
-  filename.
+- Choose a site/location for the filename and first stamp line, then enter
+  extra notes for the stamp only.
 - Detect dark borders as an initial crop suggestion.
 - Debounce editing gestures and render interactive previews at reduced
   resolution for smoother work with large photos.
 - Save processed images to a `bordered_output` subfolder without replacing
   existing files.
+- Recover site and notes from older processed images using OCR when available.
 
 ## Requirements
 
@@ -25,6 +26,20 @@ below the image, and saves a processed copy with a descriptive filename.
 
 The app uses Pillow for image handling and NumPy for border detection. On Linux,
 you may need to install your distribution's Tk package (often named `python3-tk`).
+OCR recovery also uses the `pytesseract` Python package and requires the
+Tesseract OCR engine to be installed separately and available on `PATH`.
+On Windows, install Tesseract using the installer linked from the
+[UB Mannheim Tesseract page](https://github.com/UB-Mannheim/tesseract/wiki), then
+open a new terminal and check `tesseract --version`. You can also install it
+from Windows Package Manager:
+
+```powershell
+winget install --id UB-Mannheim.TesseractOCR -e
+tesseract --version
+```
+
+If Windows cannot find the command, add the Tesseract installation folder (the
+folder containing `tesseract.exe`) to your `PATH`, then restart the app.
 
 ## Install and run
 
@@ -61,6 +76,14 @@ Then install requirements and run `python renamer.py` as above.
    history is created for photos processed with this feature and does not
    recover metadata from older output files.
 
+   If no history match exists, the app looks for a prior output with the
+   source photo's timestamp in its filename and uses Tesseract OCR to read its
+   black stamp strip. The first stamped line (after the timestamp) is placed in
+   the site field; subsequent lines are combined into notes. OCR results can
+   be imperfect and should be checked before saving. If multiple outputs share
+   the same timestamp, the newest one is used. This fallback requires the
+   separately installed Tesseract engine; a warning is shown if it is missing.
+
    The Location/Site dropdown is populated from `sites.txt` next to `renamer.py`.
    Edit that file with one site per line and restart the app to load your list.
    Blank lines and lines whose first non-space character is `#` are ignored. The
@@ -72,19 +95,22 @@ When the folder queue is exhausted, the app shows **Batch complete**, disables
 process/skip, and keeps Previous available so you can revisit an image.
 
 The filename starts with the capture timestamp (`YYYYMMDD-HHMMSS`) when a time
-is available, followed by non-empty metadata fields as lowercase,
-hyphen-separated slugs. The border label includes the same timestamp in
-`YYYY:MM:DD HH:MM:SS` form. If EXIF provides only a date, only the date is
-included. The app reads `DateTimeOriginal` first, then `DateTime`; if neither
-contains a usable date, it uses the filesystem timestamp: creation time on
-Windows and metadata-change time on many Unix-like systems.
+is available, followed by the site/location as a lowercase, hyphen-separated
+slug. Extra notes do not affect the filename. The first stamp line shows the
+capture timestamp and site/location; the notes are stamped on following lines.
+The border label includes the same timestamp in `YYYY:MM:DD HH:MM:SS` form. If
+EXIF provides only a date, only the date is included. The app reads
+`DateTimeOriginal` first, then `DateTime`; if neither contains a usable date, it
+uses the filesystem timestamp: creation time on Windows and metadata-change
+time on many Unix-like systems.
 
 The stamp is rendered in a black strip appended below the image after cropping
 and rotation, so it remains at the bottom in every photo orientation. Its first
-line shows the capture timestamp and site/location; its second line shows the
-free-form notes. When both lines are present, the black strip is twice as tall
-to give the text more room. Stamp text wraps to additional centered lines when
-it would exceed the photo's width, and the strip grows to fit those lines.
+line shows the capture timestamp and site/location; following line(s) show the
+free-form notes. When both the first line and notes are present, the black strip
+is twice as tall to give the text more room. Stamp text wraps to additional
+centered lines when it would exceed the photo's width, and the strip grows to
+fit those lines.
 
 If a destination name already exists, the app adds a numeric suffix such as
 `-2` before the extension. It also opens the destination in exclusive-create
