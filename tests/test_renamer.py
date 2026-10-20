@@ -67,9 +67,10 @@ class RenamerTests(unittest.TestCase):
             history = {
                 "source-fingerprint": {
                     "site": "Field Site",
-                    "notes": "North gate",
+                    "short_text": "Cabinet 2",
+                    "notes": "North gate description",
                     "source_name": "photo.jpg",
-                    "output_name": "20240102-field-site-north-gate.jpg",
+                    "output_name": "20240102-field-site-cabinet-2.jpg",
                 },
             }
 
@@ -77,6 +78,29 @@ class RenamerTests(unittest.TestCase):
             save_processing_history(history_path, history)
 
             self.assertEqual(load_processing_history(history_path), history)
+
+    def test_processing_history_migrates_records_without_short_text(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            history_path = Path(temp_dir) / "processing_history.json"
+            legacy_history = {
+                "source-fingerprint": {
+                    "site": "Field Site",
+                    "notes": "North gate description",
+                    "source_name": "photo.jpg",
+                    "output_name": "20240102-field-site.jpg",
+                },
+            }
+            history_path.write_text(
+                renamer.json.dumps(legacy_history), encoding="utf-8")
+
+            loaded_history = load_processing_history(history_path)
+
+        self.assertEqual(
+            loaded_history["source-fingerprint"]["short_text"], "")
+        self.assertEqual(
+            loaded_history["source-fingerprint"]["notes"],
+            "North gate description",
+        )
 
     def test_processing_history_rejects_invalid_json_shape(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -97,13 +121,13 @@ class RenamerTests(unittest.TestCase):
 
         self.assertNotEqual(first_fingerprint, second_fingerprint)
 
-    def test_stamp_ocr_parser_separates_site_from_notes(self):
+    def test_stamp_ocr_parser_separates_site_short_text_and_description(self):
         self.assertEqual(
             parse_stamp_text(
-                "2024:05:06 07:08:09 | Rangiora\nFlood inspection\n"
-                "North bank"
+                "2024:05:06 07:08:09 | Rangiora | Cabinet 2\n"
+                "Flood inspection\nNorth bank"
             ),
-            ("Rangiora", "Flood inspection North bank"),
+            ("Rangiora", "Cabinet 2", "Flood inspection North bank"),
         )
 
     def test_stamp_ocr_parser_uses_line_after_standalone_timestamp_as_site(self):
@@ -112,13 +136,13 @@ class RenamerTests(unittest.TestCase):
                 "2026:09:18 12:26:16\nCabinet switchboard\n"
                 "Inspection notes\nNorth wall"
             ),
-            ("Cabinet switchboard", "Inspection notes North wall"),
+            ("Cabinet switchboard", "", "Inspection notes North wall"),
         )
 
     def test_stamp_ocr_parser_rejects_text_without_a_timestamp(self):
         self.assertEqual(
             parse_stamp_text("Cabinet switchboard\nInspection notes"),
-            ("", ""),
+            ("", "", ""),
         )
 
     def test_stamp_ocr_reads_bottom_black_strip(self):
@@ -126,7 +150,7 @@ class RenamerTests(unittest.TestCase):
             image_path = Path(temp_dir) / "processed.png"
             image = add_bottom_stamp_strip(
                 Image.new("RGB", (100, 80), "white"),
-                "2024:05:06 07:08:09 | Rangiora",
+                "2024:05:06 07:08:09 | Rangiora | Cabinet 2",
                 "North bank",
                 strip_height=20,
             )
@@ -135,11 +159,14 @@ class RenamerTests(unittest.TestCase):
             with patch.object(
                     renamer.pytesseract,
                     "image_to_string",
-                    return_value="2024:05:06 07:08:09 | Rangiora\nNorth bank"
+                    return_value=(
+                        "2024:05:06 07:08:09 | Rangiora | Cabinet 2\n"
+                        "North bank"
+                    )
             ) as ocr:
                 fields = read_stamp_fields(str(image_path))
 
-        self.assertEqual(fields, ("Rangiora", "North bank"))
+        self.assertEqual(fields, ("Rangiora", "Cabinet 2", "North bank"))
         ocr_image = ocr.call_args.args[0]
         self.assertEqual(ocr_image.width, 300)
         self.assertGreaterEqual(ocr_image.height, 120)
@@ -255,11 +282,12 @@ class RenamerTests(unittest.TestCase):
             "field-site-a-2",
         )
 
-    def test_output_filename_uses_timestamp_and_site_not_stamp_notes(self):
+    def test_output_filename_uses_timestamp_site_and_short_text(self):
         self.assertEqual(
             build_output_filename(
-                "20240506-070809", "Rangiora Field Site", ".JPG"),
-            "20240506-070809-rangiora-field-site.jpg",
+                "20240506-070809", "Rangiora Field Site", "Cabinet 2",
+                ".JPG"),
+            "20240506-070809-rangiora-field-site-cabinet-2.jpg",
         )
 
     def test_crop_trims_each_requested_edge(self):
@@ -434,6 +462,9 @@ class RenamerTests(unittest.TestCase):
         app.lbl_new_fn = Mock()
         app.canvas_orig = Mock()
         app.canvas_edit = Mock()
+        app.drop_loc = Mock()
+        app.txt_short = Mock()
+        app.txt_notes = Mock()
         app.btn_process = Mock()
         app.btn_skip = Mock()
         app.btn_back = Mock()
@@ -449,6 +480,9 @@ class RenamerTests(unittest.TestCase):
             text="No supported images found")
         app.canvas_orig.config.assert_called_once_with(image="")
         app.canvas_edit.config.assert_called_once_with(image="")
+        app.drop_loc.set.assert_called_once_with("")
+        app.txt_short.delete.assert_called_once_with(0, renamer.tk.END)
+        app.txt_notes.delete.assert_called_once_with("1.0", renamer.tk.END)
         app.btn_process.config.assert_called_once_with(state="disabled")
         app.btn_skip.config.assert_called_once_with(state="disabled")
         app.btn_back.config.assert_called_once_with(state="disabled")
@@ -503,6 +537,9 @@ class RenamerTests(unittest.TestCase):
             app.lbl_new_fn = Mock()
             app.canvas_orig = Mock()
             app.canvas_edit = Mock()
+            app.drop_loc = Mock()
+            app.txt_short = Mock()
+            app.txt_notes = Mock()
             app.btn_process = Mock()
             app.btn_skip = Mock()
             app.btn_back = Mock()
@@ -522,6 +559,32 @@ class RenamerTests(unittest.TestCase):
         app.btn_skip.config.assert_called_once_with(state="disabled")
         app.btn_back.config.assert_called_once_with(state="disabled")
 
+    def test_selecting_output_folder_loads_direct_images_only(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "bordered_output"
+            nested_output_dir = output_dir / "bordered_output"
+            nested_output_dir.mkdir(parents=True)
+            Image.new("RGB", (4, 3)).save(output_dir / "processed.jpg")
+            Image.new("RGB", (4, 3)).save(
+                nested_output_dir / "nested-processed.jpg")
+
+            app = ImageProcessorApp.__new__(ImageProcessorApp)
+            app.root = Mock()
+            app.input_folder = ""
+            app.processing_history = {}
+            app.lbl_folder = Mock()
+            app.load_preview = Mock()
+
+            with patch.object(
+                    renamer.filedialog,
+                    "askdirectory",
+                    return_value=str(output_dir)):
+                app.browse_folder()
+
+        self.assertEqual(app.input_folder, str(output_dir))
+        self.assertEqual(app.files, ["processed.jpg"])
+        app.load_preview.assert_called_once_with()
+
     def test_loading_valid_image_enables_processing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             image_path = Path(temp_dir) / "photo.png"
@@ -535,7 +598,8 @@ class RenamerTests(unittest.TestCase):
             app.processing_history = {
                 fingerprint: {
                     "site": "Field Site",
-                    "notes": "North gate",
+                    "short_text": "Cabinet 2",
+                    "notes": "North gate description",
                     "source_name": "photo.png",
                     "output_name": "processed-photo.png",
                 },
@@ -561,6 +625,7 @@ class RenamerTests(unittest.TestCase):
             app.lbl_top = Mock()
             app.lbl_bottom = Mock()
             app.drop_loc = Mock()
+            app.txt_short = Mock()
             app.txt_notes = Mock()
             app.update_edited_mockup = Mock()
 
@@ -574,11 +639,17 @@ class RenamerTests(unittest.TestCase):
             call(""),
             call("Field Site"),
         ])
-        self.assertEqual(app.txt_notes.delete.call_args_list, [
+        self.assertEqual(app.txt_short.delete.call_args_list, [
             call(0, renamer.tk.END),
         ])
+        self.assertEqual(app.txt_notes.delete.call_args_list, [
+            call("1.0", renamer.tk.END),
+        ])
+        self.assertEqual(app.txt_short.insert.call_args_list, [
+            call(0, "Cabinet 2"),
+        ])
         self.assertEqual(app.txt_notes.insert.call_args_list, [
-            call(0, "North gate"),
+            call("1.0", "North gate description"),
         ])
         app.btn_process.config.assert_called_with(state="normal")
         app.btn_skip.config.assert_called_with(state="normal")
@@ -619,6 +690,7 @@ class RenamerTests(unittest.TestCase):
             app.lbl_top = Mock()
             app.lbl_bottom = Mock()
             app.drop_loc = Mock()
+            app.txt_short = Mock()
             app.txt_notes = Mock()
             app.update_edited_mockup = Mock()
 
@@ -626,7 +698,9 @@ class RenamerTests(unittest.TestCase):
                 patch.object(
                     renamer,
                     "read_stamp_fields",
-                    return_value=("Recovered Site", "Recovered notes"),
+                    return_value=(
+                        "Recovered Site", "Recovered short",
+                        "Recovered description"),
                 ) as read_stamp,
                 patch.object(renamer.ImageTk, "PhotoImage",
                              return_value=object()),
@@ -637,7 +711,9 @@ class RenamerTests(unittest.TestCase):
             call(""),
             call("Recovered Site"),
         ])
-        app.txt_notes.insert.assert_called_once_with(0, "Recovered notes")
+        app.txt_short.insert.assert_called_once_with(0, "Recovered short")
+        app.txt_notes.insert.assert_called_once_with(
+            "1.0", "Recovered description")
         self.assertEqual(
             read_stamp.call_args.args[0],
             os.path.join(temp_dir, "photo.png"),
@@ -666,6 +742,7 @@ class RenamerTests(unittest.TestCase):
             app.btn_skip = Mock()
             app.btn_back = Mock()
             app.drop_loc = Mock()
+            app.txt_short = Mock()
             app.txt_notes = Mock()
 
             with patch.object(renamer.messagebox, "showerror"):
@@ -673,7 +750,8 @@ class RenamerTests(unittest.TestCase):
 
         self.assertIsNone(app.current_pil_img)
         app.drop_loc.set.assert_called_once_with("")
-        app.txt_notes.delete.assert_called_once_with(0, renamer.tk.END)
+        app.txt_short.delete.assert_called_once_with(0, renamer.tk.END)
+        app.txt_notes.delete.assert_called_once_with("1.0", renamer.tk.END)
         app.btn_process.config.assert_called_with(state="disabled")
         app.btn_skip.config.assert_called_with(state="normal")
 

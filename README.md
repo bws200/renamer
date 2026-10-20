@@ -10,8 +10,8 @@ below the image, and saves a processed copy with a descriptive filename.
 - Preview the original and processed image side by side.
 - Adjust crop percentages independently on all four edges.
 - Rotate images in 90-degree increments.
-- Choose a site/location for the filename and first stamp line, then enter
-  extra notes for the stamp only.
+- Choose a site/location and short line-one text for the filename and stamp,
+  then enter a longer description for the stamp only.
 - Detect dark borders as an initial crop suggestion.
 - Debounce editing gestures and render interactive previews at reduced
   resolution for smoother work with large photos.
@@ -63,25 +63,31 @@ Then install requirements and run `python renamer.py` as above.
 ## Workflow and file behavior
 
 1. Select a folder. Images directly in that folder with `.jpg`, `.jpeg`, `.png`,
-   `.bmp`, or `.tiff` extensions are listed in filename order.
+   `.bmp`, or `.tiff` extensions are listed in filename order. The app does not
+   search subfolders, so photos in `bordered_output` are not included when you
+   select its parent folder. You can select `bordered_output` itself to edit the
+   images inside it.
 2. Review the crop suggestion and adjust the sliders or rotation if needed.
-3. Choose or type a site/location, then enter optional free-form notes.
+3. Choose or type a site/location, enter optional short line-one text, and add
+   an optional longer description for the stamp.
 4. Choose **Process & Save**. The processed copy is written to
    `bordered_output`; the source image is left unchanged.
 
-   The app stores the chosen site and notes in
+   The app stores the chosen site, short text, and description in
    `bordered_output/processing_history.json`, keyed by a SHA-256 fingerprint of
    the original photo. When the same photo is loaded again, those fields are
    restored; unrecognized or changed photos start with blank fields. This
    history is created for photos processed with this feature and does not
-   recover metadata from older output files.
+   recover metadata from older output files. Older history records remain
+   readable; their short-text field is treated as blank.
 
    If no history match exists, the app uses Tesseract OCR on the selected
-   source photo itself; it does not read images from `bordered_output`. Text
-   following a timestamp on the same line is treated as the site; if the
-   timestamp is on its own line, the next line is treated as the site.
-   Remaining lines are combined into notes. OCR results can be imperfect and
-   should be checked before saving. This fallback requires the separately
+   selected photo itself; it does not scan subfolders. Text following a
+   timestamp on the same line is treated as the site; if the timestamp is on
+   its own line, the next line is treated as the site.
+   Additional text after the site on that line becomes the short text;
+   remaining lines are combined into the longer description. OCR results can
+   be imperfect and should be checked before saving. This fallback requires the separately
    installed Tesseract engine; a warning is shown if it is missing.
 
    The Location/Site dropdown is populated from `sites.txt` next to `renamer.py`.
@@ -95,9 +101,10 @@ When the folder queue is exhausted, the app shows **Batch complete**, disables
 process/skip, and keeps Previous available so you can revisit an image.
 
 The filename starts with the capture timestamp (`YYYYMMDD-HHMMSS`) when a time
-is available, followed by the site/location as a lowercase, hyphen-separated
-slug. Extra notes do not affect the filename. The first stamp line shows the
-capture timestamp and site/location; the notes are stamped on following lines.
+is available, followed by the site/location and optional short text as
+lowercase, hyphen-separated slugs. The longer description does not affect the
+filename. The first stamp line shows the capture timestamp, site/location, and
+short text; the longer description is stamped on following lines.
 The border label includes the same timestamp in `YYYY:MM:DD HH:MM:SS` form. If
 EXIF provides only a date, only the date is included. The app reads
 `DateTimeOriginal` first, then `DateTime`; if neither contains a usable date, it
@@ -106,11 +113,11 @@ time on many Unix-like systems.
 
 The stamp is rendered in a black strip appended below the image after cropping
 and rotation, so it remains at the bottom in every photo orientation. Its first
-line shows the capture timestamp and site/location; following line(s) show the
-free-form notes. When both the first line and notes are present, the black strip
-is twice as tall to give the text more room. Stamp text wraps to additional
-centered lines when it would exceed the photo's width, and the strip grows to
-fit those lines.
+line shows the capture timestamp, site/location, and optional short text;
+following line(s) show the longer description. When both the first line and
+description are present, the black strip is twice as tall to give the text more
+room. Stamp text wraps to additional centered lines when it would exceed the
+photo's width, and the strip grows to fit those lines.
 
 If a destination name already exists, the app adds a numeric suffix such as
 `-2` before the extension. It also opens the destination in exclusive-create

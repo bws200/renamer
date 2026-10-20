@@ -17,6 +17,7 @@ PREVIEW_DEBOUNCE_MS = 120
 SITE_DROPDOWN_MAX_HEIGHT = 20
 SITES_FILE = "sites.txt"
 PROCESSING_HISTORY_FILE = "processing_history.json"
+OUTPUT_FOLDER = "bordered_output"
 
 
 def to_clean_rgb(img):
@@ -104,9 +105,9 @@ def sanitize_to_slug(text):
     return re.sub(r"[-\s]+", "-", text).strip("-")
 
 
-def build_output_filename(timestamp, site, extension):
-    """Build a filename from the timestamp and site; notes remain stamp-only."""
-    parts = [timestamp, sanitize_to_slug(site)]
+def build_output_filename(timestamp, site, short_text, extension):
+    """Build a filename from the timestamp, site, and short line-one text."""
+    parts = [timestamp, sanitize_to_slug(site), sanitize_to_slug(short_text)]
     return "-".join(part for part in parts if part) + extension.lower()
 
 
@@ -156,14 +157,14 @@ def get_file_fingerprint(file_path):
 
 
 def parse_stamp_text(ocr_text):
-    """Interpret OCR output as the stamped site line followed by notes."""
+    """Interpret OCR output as timestamp/site/short text and description."""
     lines = [
-        re.sub(r"\s+", " ", line).strip(" |")
+        re.sub(r"\s+", " ", line).strip()
         for line in ocr_text.splitlines()
     ]
     lines = [line for line in lines if line]
     if not lines:
-        return "", ""
+        return "", "", ""
 
     timestamp_match = re.match(
         r"^\d{4}:\d{2}:\d{2}(?:\s+\d{2}:\d{2}:\d{2})?"
@@ -171,19 +172,23 @@ def parse_stamp_text(ocr_text):
         lines[0],
     )
     if not timestamp_match:
-        return "", ""
+        return "", "", ""
 
-    site = timestamp_match.group(1).strip()
-    if not site and len(lines) > 1:
-        site = lines[1]
-        notes = " ".join(lines[2:])
-    else:
-        notes = " ".join(lines[1:])
-    return site, notes
+    line_one = timestamp_match.group(1).strip(" |")
+    following_lines = lines[1:]
+    if not line_one and following_lines:
+        line_one = following_lines.pop(0)
+
+    line_one_parts = [part.strip() for part in line_one.split("|")]
+    line_one_parts = [part for part in line_one_parts if part]
+    site = line_one_parts[0] if line_one_parts else ""
+    short_text = " ".join(line_one_parts[1:])
+    description = " ".join(following_lines)
+    return site, short_text, description
 
 
 def read_stamp_fields(image_path):
-    """OCR the black strip at the bottom of a previously processed image."""
+    """OCR timestamp, site, short text, and description from the image banner."""
     with Image.open(image_path) as source_image:
         image = ImageOps.exif_transpose(source_image).convert("L")
         width, height = image.size
@@ -196,7 +201,7 @@ def read_stamp_fields(image_path):
             top = row
 
         if top == height:
-            return "", ""
+            return "", "", ""
 
         strip = image.crop((0, top, width, height))
         scale = min(3.0, max(1.0, 1600.0 / width))
@@ -230,6 +235,9 @@ def load_processing_history(history_path):
                 isinstance(record.get(field), str)
                 for field in ("site", "notes", "source_name", "output_name")):
             raise ValueError("Processing history contains an incomplete record.")
+        short_text = record.setdefault("short_text", "")
+        if not isinstance(short_text, str):
+            raise ValueError("Processing history contains invalid short text.")
 
     return history
 
@@ -578,8 +586,14 @@ class ImageProcessorApp:
                                      state="normal")
         self.drop_loc.pack(fill="x", pady=(0, 5))
 
-        ttk.Label(self.left, text="Notes").pack(anchor="w")
-        self.txt_notes = ttk.Entry(self.left)
+        ttk.Label(self.left, text="Line 1 - Short text (filename + stamp)").pack(
+            anchor="w")
+        self.txt_short = ttk.Entry(self.left)
+        self.txt_short.pack(fill="x", pady=(0, 5))
+
+        ttk.Label(self.left, text="Line 2 - Description (stamp only)").pack(
+            anchor="w")
+        self.txt_notes = tk.Text(self.left, height=3, wrap="word")
         self.txt_notes.pack(fill="x", pady=(0, 10))
 
         crop_frame = ttk.LabelFrame(self.left,
@@ -636,9 +650,13 @@ class ImageProcessorApp:
         self.drop_loc.bind("<KeyRelease>",
                            lambda e: self.schedule_edited_preview())
 
-        self.txt_notes.bind("<FocusOut>",
+        self.txt_short.bind("<KeyRelease>",
                             lambda e: self.schedule_edited_preview())
-        self.txt_notes.bind("<Return>",
+        self.txt_short.bind("<FocusOut>",
+                            lambda e: self.schedule_edited_preview())
+        self.txt_notes.bind("<KeyRelease>",
+                            lambda e: self.schedule_edited_preview())
+        self.txt_notes.bind("<FocusOut>",
                             lambda e: self.schedule_edited_preview())
 
         ttk.Label(self.left,
@@ -776,6 +794,9 @@ class ImageProcessorApp:
         self.lbl_new_fn.config(text="New File: --")
         self.canvas_orig.config(image="")
         self.canvas_edit.config(image="")
+        self.drop_loc.set("")
+        self.txt_short.delete(0, tk.END)
+        self.txt_notes.delete("1.0", tk.END)
         self._update_navigation_buttons()
 
     def _show_complete_state(self):
@@ -801,7 +822,7 @@ class ImageProcessorApp:
         if not selected:
             return
 
-        output_dir = os.path.join(selected, "bordered_output")
+        output_dir = os.path.join(selected, OUTPUT_FOLDER)
         history_path = os.path.join(output_dir, PROCESSING_HISTORY_FILE)
         try:
             processing_history = load_processing_history(history_path)
@@ -846,7 +867,8 @@ class ImageProcessorApp:
         self.tk_orig_img = None
         self.tk_edit_img = None
         self.drop_loc.set("")
-        self.txt_notes.delete(0, tk.END)
+        self.txt_short.delete(0, tk.END)
+        self.txt_notes.delete("1.0", tk.END)
         self._update_navigation_buttons()
 
         self.lbl_cnt.config(
@@ -863,10 +885,11 @@ class ImageProcessorApp:
                 self.current_fingerprint)
             if previous_record:
                 self.drop_loc.set(previous_record["site"])
-                self.txt_notes.insert(0, previous_record["notes"])
+                self.txt_short.insert(0, previous_record["short_text"])
+                self.txt_notes.insert("1.0", previous_record["notes"])
             else:
                 try:
-                    site, notes = read_stamp_fields(path)
+                    site, short_text, notes = read_stamp_fields(path)
                 except (
                         OSError,
                         pytesseract.TesseractNotFoundError,
@@ -884,8 +907,10 @@ class ImageProcessorApp:
                 else:
                     if site:
                         self.drop_loc.set(site)
+                    if short_text:
+                        self.txt_short.insert(0, short_text)
                     if notes:
-                        self.txt_notes.insert(0, notes)
+                        self.txt_notes.insert("1.0", notes)
 
             with Image.open(path) as raw_img:
                 transposed = ImageOps.exif_transpose(raw_img)
@@ -961,11 +986,13 @@ class ImageProcessorApp:
         _, date_file_str, date_label_str = get_exif_data_and_dates(input_path)
 
         loc_val = self.drop_loc.get().strip()
-        notes_val = self.txt_notes.get().strip()
+        short_text_val = self.txt_short.get().strip()
+        description_val = self.txt_notes.get("1.0", "end-1c").strip()
 
         ext = os.path.splitext(filename)[1]
-        new_filename = build_output_filename(date_file_str, loc_val, ext)
-        output_dir = os.path.join(self.input_folder, "bordered_output")
+        new_filename = build_output_filename(
+            date_file_str, loc_val, short_text_val, ext)
+        output_dir = os.path.join(self.input_folder, OUTPUT_FOLDER)
         new_filename = os.path.basename(
             get_unique_output_path(output_dir, new_filename))
 
@@ -973,13 +1000,13 @@ class ImageProcessorApp:
         self.lbl_new_fn.config(text=f"New File Preview: {new_filename}")
 
         first_stamp_line = " | ".join(
-            part for part in (date_label_str, loc_val) if part)
+            part for part in (date_label_str, loc_val, short_text_val) if part)
 
         strip_height = max(24, int(max(img.size) * 0.05))
         full_bordered = add_bottom_stamp_strip(
             img,
             first_stamp_line,
-            notes_val,
+            description_val,
             strip_height=strip_height)
 
         scale_factor = 320.0 / preview_max_dimension
@@ -1008,7 +1035,7 @@ class ImageProcessorApp:
         filename = self.files[self.current_index]
         input_path = os.path.join(self.input_folder, filename)
 
-        output_dir = os.path.join(self.input_folder, "bordered_output")
+        output_dir = os.path.join(self.input_folder, OUTPUT_FOLDER)
         os.makedirs(output_dir, exist_ok=True)
 
         ext = os.path.splitext(filename)[1]
@@ -1017,9 +1044,11 @@ class ImageProcessorApp:
             input_path)
 
         loc_val = self.drop_loc.get().strip()
-        notes_val = self.txt_notes.get().strip()
+        short_text_val = self.txt_short.get().strip()
+        description_val = self.txt_notes.get("1.0", "end-1c").strip()
 
-        output_name = build_output_filename(date_file_str, loc_val, ext)
+        output_name = build_output_filename(
+            date_file_str, loc_val, short_text_val, ext)
         output_path = get_unique_output_path(output_dir, output_name)
         output_name = os.path.basename(output_path)
 
@@ -1049,13 +1078,13 @@ class ImageProcessorApp:
             img = img.rotate(self.rotation_angle, expand=True)
 
         first_stamp_line = " | ".join(
-            part for part in (date_label_str, loc_val) if part)
+            part for part in (date_label_str, loc_val, short_text_val) if part)
 
         strip_height = max(24, int(max(img.size) * 0.05))
         final_img = add_bottom_stamp_strip(
             img,
             first_stamp_line,
-            notes_val,
+            description_val,
             strip_height=strip_height)
 
         save_kwargs = {}
@@ -1091,7 +1120,8 @@ class ImageProcessorApp:
         updated_history = dict(self.processing_history)
         updated_history[self.current_fingerprint] = {
             "site": loc_val,
-            "notes": notes_val,
+            "short_text": short_text_val,
+            "notes": description_val,
             "source_name": filename,
             "output_name": output_name,
         }
@@ -1101,27 +1131,24 @@ class ImageProcessorApp:
         except (OSError, ValueError) as exc:
             messagebox.showwarning(
                 "Processing History Not Saved",
-                f"The photo was saved as {output_name}, but its site and notes "
+                f"The photo was saved as {output_name}, but its metadata "
                 f"could not be saved to processing history:\n\n{exc}",
             )
         else:
             self.processing_history = updated_history
 
-        self.txt_notes.delete(0, tk.END)
         self.current_index += 1
         self.load_preview()
 
     def skip_current(self):
         if self.current_index >= len(self.files):
             return
-        self.txt_notes.delete(0, tk.END)
         self.current_index += 1
         self.load_preview()
 
     def prev_current(self):
         if self.current_index <= 0:
             return
-        self.txt_notes.delete(0, tk.END)
         self.current_index -= 1
         self.load_preview()
 
