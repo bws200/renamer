@@ -1,0 +1,1 @@
+"""Photo renamer application package."""

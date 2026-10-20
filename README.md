@@ -82,13 +82,14 @@ Then install requirements and run `python renamer.py` as above.
    readable; their short-text field is treated as blank.
 
    If no history match exists, the app uses Tesseract OCR on the selected
-   selected photo itself; it does not scan subfolders. Text following a
+   photo itself; it does not scan subfolders. Text following a
    timestamp on the same line is treated as the site; if the timestamp is on
    its own line, the next line is treated as the site.
    Additional text after the site on that line becomes the short text;
    remaining lines are combined into the longer description. OCR results can
-   be imperfect and should be checked before saving. This fallback requires the separately
-   installed Tesseract engine; a warning is shown if it is missing.
+   be imperfect and should be checked before saving. This fallback requires
+   the separately installed Tesseract engine; a warning is shown if it is
+   missing.
 
    The Location/Site dropdown is populated from `sites.txt` next to `renamer.py`.
    Edit that file with one site per line and restart the app to load your list.
@@ -144,3 +145,18 @@ python -m unittest discover -s tests -v
 ```
 
 GitHub Actions runs this suite on Windows and Ubuntu with Python 3.10 and 3.14.
+
+## Project structure
+
+- `renamer.py` is the compatibility launcher; run the app with `python renamer.py`.
+- `photo_renamer/app.py` contains the Tkinter interface and workflow.
+- `photo_renamer/image_ops.py` contains image conversion, cropping, resizing,
+  rotation-related processing, and stamp rendering.
+- `photo_renamer/metadata.py` handles EXIF dates and output filenames.
+- `photo_renamer/stamp_ocr.py` reads and parses stamped text.
+- `photo_renamer/history.py` manages file fingerprints and processing history.
+- `photo_renamer/models.py` defines the structured stamp fields shared by the
+  interface and OCR.
+- `photo_renamer/settings.py` holds application constants and site-list loading.
+- `photo_renamer/storage.py` contains collision-safe output path and save helpers.
+- `tests/` groups tests by application responsibility.
